@@ -1,4 +1,4 @@
-import { useRef, useCallback, useState } from 'react';
+import { useRef, useCallback, useState, useEffect } from 'react';
 import * as THREE from 'three';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 
@@ -13,9 +13,9 @@ export interface BrushSettings {
   size: number;
   color: string;
   opacity: number;
-  hardness: number;
   spacing: number;
   type: 'circle' | 'square';
+  mode?: 'paint' | 'erase';
 }
 
 export interface Layer {
@@ -31,7 +31,7 @@ export interface Layer {
 interface SpatialHash {
   uuid: string;
   cellSize: number;
-  cells: Map<string, number[]>;
+  cells: Map<number, number[]>;
   faceCenters: Float32Array;
   faceRadii: Float32Array;
 }
@@ -63,23 +63,57 @@ export function use3DPaint(
   const [layers, setLayers] = useState<Layer[]>([]);
   const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
 
+  const undoStackRef = useRef<{ layerId: string; bitmap: ImageBitmap | HTMLCanvasElement }[]>([]);
+  const redoStackRef = useRef<{ layerId: string; bitmap: ImageBitmap | HTMLCanvasElement }[]>([]);
+
+  // --- RAF-based dirty compositor ---
+  // Instead of compositing on every drawStamp call, we mark dirty and let a RAF
+  // do exactly one composite per display frame. This is the biggest perf win at 4K.
+  const compositeIsDirtyRef = useRef(false);
+  const rafHandleRef = useRef<number>(0);
+
+  const scheduleComposite = useCallback(() => {
+    compositeIsDirtyRef.current = true;
+    // Only schedule one pending RAF at a time
+    if (rafHandleRef.current === 0) {
+      rafHandleRef.current = requestAnimationFrame(() => {
+        rafHandleRef.current = 0;
+        if (!compositeIsDirtyRef.current) return;
+        compositeIsDirtyRef.current = false;
+
+        const state = paintStateRef.current;
+        if (!state.compositeCtx || !state.compositeCanvas) return;
+        state.compositeCtx.globalCompositeOperation = 'source-over';
+        state.compositeCtx.globalAlpha = 1.0;
+        state.compositeCtx.fillStyle = '#ffffff';
+        state.compositeCtx.fillRect(0, 0, state.compositeCanvas.width, state.compositeCanvas.height);
+        for (const layer of state.layers) {
+          if (!layer.visible) continue;
+          state.compositeCtx.globalAlpha = layer.opacity;
+          state.compositeCtx.globalCompositeOperation = layer.blendMode;
+          state.compositeCtx.drawImage(layer.canvas, 0, 0);
+        }
+        if (state.texture) {
+          state.texture.needsUpdate = true;
+        }
+      });
+    }
+  }, []);
+
+  // Original synchronous composite (kept for undo/redo and layer ops that need immediate update)
   const recompositeLayers = useCallback(() => {
     const state = paintStateRef.current;
     if (!state.compositeCtx || !state.compositeCanvas) return;
-    
-    // Base color
     state.compositeCtx.globalCompositeOperation = 'source-over';
     state.compositeCtx.globalAlpha = 1.0;
     state.compositeCtx.fillStyle = '#ffffff';
     state.compositeCtx.fillRect(0, 0, state.compositeCanvas.width, state.compositeCanvas.height);
-
     for (const layer of state.layers) {
       if (!layer.visible) continue;
       state.compositeCtx.globalAlpha = layer.opacity;
       state.compositeCtx.globalCompositeOperation = layer.blendMode;
       state.compositeCtx.drawImage(layer.canvas, 0, 0);
     }
-
     if (state.texture) {
       state.texture.needsUpdate = true;
     }
@@ -91,6 +125,9 @@ export function use3DPaint(
     prevMouse: THREE.Vector2;
     worldPos: THREE.Vector3;
   } | null>(null);
+
+  // Persistent Raycaster — avoids GC allocation on every paint step
+  const raycasterRef = useRef(new THREE.Raycaster());
 
   const spatialHashRef = useRef<SpatialHash | null>(null);
 
@@ -117,7 +154,14 @@ export function use3DPaint(
     let cellSize = Math.max(size.x, size.y, size.z) / 10;
     if (cellSize === 0) cellSize = 1;
     
-    const cells = new Map<string, number[]>();
+    // Using an integer hash key instead of string concatenation to avoid GC overhead
+    // Hash function for x, y, z grid coordinates:
+    const hashCoord = (x: number, y: number, z: number) => {
+        // Simple and fast hash assuming grid typically doesn't exceed -128 to 127 in each dimension for a 10x subdivision
+        return (x & 0xFF) | ((y & 0xFF) << 8) | ((z & 0xFF) << 16);
+    };
+    
+    const cells = new Map<number, number[]>();
     
     const vA = new THREE.Vector3();
     const vB = new THREE.Vector3();
@@ -163,7 +207,7 @@ export function use3DPaint(
         for (let x = minX; x <= maxX; x++) {
             for (let y = minY; y <= maxY; y++) {
                 for (let z = minZ; z <= maxZ; z++) {
-                    const key = `${x},${y},${z}`;
+                    const key = hashCoord(x, y, z);
                     let cell = cells.get(key);
                     if (!cell) {
                         cell = [];
@@ -329,10 +373,11 @@ export function use3DPaint(
       { x: uvC.x * canvasWidth, y: (1 - uvC.y) * canvasHeight }
     ];
 
-    // Bloat UV triangle to bleed seams between adjacent faces
+    // Bloat UV triangle to bleed paint across seams between adjacent faces
+    // Higher value = more pixels painted outside UV island borders = less visible seams
     const cx = (clip[0].x + clip[1].x + clip[2].x) / 3;
     const cy = (clip[0].y + clip[1].y + clip[2].y) / 3;
-    const bloat = 4.0; // Increased to 4.0 for nice UV bleeding
+    const bloat = 12.0; // px in texture space
     for (let i = 0; i < 3; i++) {
       const dx = clip[i].x - cx;
       const dy = clip[i].y - cy;
@@ -396,10 +441,14 @@ export function use3DPaint(
     const minZ = Math.floor((hitPointLocal.z - localRadius) / cellSize);
     const maxZ = Math.floor((hitPointLocal.z + localRadius) / cellSize);
 
+    const hashCoord = (x: number, y: number, z: number) => {
+      return (x & 0xFF) | ((y & 0xFF) << 8) | ((z & 0xFF) << 16);
+    };
+
     for (let x = minX; x <= maxX; x++) {
       for (let y = minY; y <= maxY; y++) {
         for (let z = minZ; z <= maxZ; z++) {
-          const key = `${x},${y},${z}`;
+          const key = hashCoord(x, y, z);
           const cellFaces = cells.get(key);
           if (cellFaces) {
             for (const i of cellFaces) {
@@ -453,10 +502,11 @@ export function use3DPaint(
     const ctx = activeLayer.ctx;
     if (!ctx) return;
 
-    const { color, opacity, hardness, type } = brushSettings;
+    const { color, opacity, type, mode } = brushSettings;
 
     ctx.save();
 
+    // Soft brush skips triangle clip — removed, pending rework.
     if (transform.clip) {
       ctx.beginPath();
       ctx.moveTo(transform.clip[0].x, transform.clip[0].y);
@@ -468,25 +518,17 @@ export function use3DPaint(
 
     ctx.globalAlpha = opacity;
     ctx.setTransform(transform.a, transform.b, transform.c, transform.d, transform.e, transform.f);
-    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalCompositeOperation = mode === 'erase' ? 'destination-out' : 'source-over';
 
-    if (hardness < 1 && type === 'circle') {
-      const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
-      const rgba = hexToRgba(color, 1);
-      gradient.addColorStop(0, `rgba(${rgba.r}, ${rgba.g}, ${rgba.b}, 1)`);
-      gradient.addColorStop(hardness, `rgba(${rgba.r}, ${rgba.g}, ${rgba.b}, 0.5)`);
-      gradient.addColorStop(1, `rgba(${rgba.r}, ${rgba.g}, ${rgba.b}, 0)`);
-      ctx.fillStyle = gradient;
-    } else {
+    if (type === 'circle') {
+      // Always solid — hardness removed pending redesign
       ctx.fillStyle = color;
-    }
-
-    if (type === 'square') {
-      ctx.fillRect(-1, -1, 2, 2);
-    } else {
       ctx.beginPath();
       ctx.arc(0, 0, 1, 0, Math.PI * 2);
       ctx.fill();
+    } else if (type === 'square') {
+      ctx.fillStyle = color;
+      ctx.fillRect(-1, -1, 2, 2);
     }
 
     ctx.restore();
@@ -510,6 +552,36 @@ export function use3DPaint(
       worldPos: hitPoint.clone()
     };
 
+    // Save state for undo asynchronously to avoid stutter on stroke start
+    const state = paintStateRef.current;
+    if (state.activeLayerId) {
+      const activeLayer = state.layers.find(l => l.id === state.activeLayerId);
+      if (activeLayer && activeLayer.ctx) {
+        if (typeof createImageBitmap !== 'undefined') {
+           createImageBitmap(activeLayer.canvas).then(bitmap => {
+             undoStackRef.current.push({ layerId: activeLayer.id, bitmap });
+             if (undoStackRef.current.length > 20) {
+                 const oldest = undoStackRef.current.shift();
+                 if (oldest && 'close' in oldest.bitmap) oldest.bitmap.close();
+             }
+             redoStackRef.current.forEach(item => {
+                 if ('close' in item.bitmap) item.bitmap.close();
+             });
+             redoStackRef.current = [];
+           });
+        } else {
+           // Fallback for older browsers
+           const snapCanvas = document.createElement('canvas');
+           snapCanvas.width = activeLayer.canvas.width;
+           snapCanvas.height = activeLayer.canvas.height;
+           snapCanvas.getContext('2d')?.drawImage(activeLayer.canvas, 0, 0);
+           undoStackRef.current.push({ layerId: activeLayer.id, bitmap: snapCanvas });
+           if (undoStackRef.current.length > 20) undoStackRef.current.shift();
+           redoStackRef.current = [];
+        }
+      }
+    }
+
     const faces = getFacesInRadius(hitPoint, hitNormalLocal, mesh, camera, brushSettings.size);
     
     for (const faceIndex of faces) {
@@ -529,8 +601,9 @@ export function use3DPaint(
     }
 
     recompositeLayers();
+    scheduleComposite();
     setIsPainting(true);
-  }, [brushSettings.size, calculateUVTransformForFace, getFacesInRadius, drawStamp, recompositeLayers]);
+  }, [brushSettings.size, calculateUVTransformForFace, getFacesInRadius, drawStamp, recompositeLayers, scheduleComposite]);
 
   // Continue painting
   const paint = useCallback((
@@ -557,7 +630,7 @@ export function use3DPaint(
     
     // Cap steps at 50 per frame to ensure high performance even with textured brushes
     const steps = Math.min(50, Math.max(1, Math.floor(dist / stepNdc)));
-    const raycaster = new THREE.Raycaster();
+    const raycaster = raycasterRef.current; // reuse persistent instance — no GC!
 
     const startPt = new THREE.Vector2().addVectors(prevMouse, lastMouse).multiplyScalar(0.5);
     const endPt = new THREE.Vector2().addVectors(lastMouse, currentMouse).multiplyScalar(0.5);
@@ -602,10 +675,20 @@ export function use3DPaint(
         }
     }
 
-    recompositeLayers();
+    // Use scheduleComposite (RAF-gated) — at most 1 composite per display frame
+    scheduleComposite();
     lastStrokeRef.current.prevMouse = lastStrokeRef.current.mouse.clone();
     lastStrokeRef.current.mouse = currentMouse.clone();
-  }, [brushSettings.size, calculateUVTransformForFace, getFacesInRadius, drawStamp, recompositeLayers]);
+  }, [brushSettings.size, calculateUVTransformForFace, getFacesInRadius, drawStamp, scheduleComposite]);
+
+  // Cleanup pending RAF on unmount
+  useEffect(() => {
+    return () => {
+      if (rafHandleRef.current !== 0) {
+        cancelAnimationFrame(rafHandleRef.current);
+      }
+    };
+  }, []);
 
   // Stop painting
   const stopPainting = useCallback(() => {
@@ -621,14 +704,84 @@ export function use3DPaint(
     const activeLayer = state.layers.find(l => l.id === state.activeLayerId);
     if (!activeLayer) return;
 
+    // Save for undo
+    if (typeof createImageBitmap !== 'undefined') {
+       createImageBitmap(activeLayer.canvas).then(bitmap => {
+         undoStackRef.current.push({ layerId: activeLayer.id, bitmap });
+         if (undoStackRef.current.length > 20) {
+             const oldest = undoStackRef.current.shift();
+             if (oldest && 'close' in oldest.bitmap) oldest.bitmap.close();
+         }
+         redoStackRef.current.forEach(item => {
+             if ('close' in item.bitmap) item.bitmap.close();
+         });
+         redoStackRef.current = [];
+       });
+    } else {
+       const snapCanvas = document.createElement('canvas');
+       snapCanvas.width = activeLayer.canvas.width;
+       snapCanvas.height = activeLayer.canvas.height;
+       snapCanvas.getContext('2d')?.drawImage(activeLayer.canvas, 0, 0);
+       undoStackRef.current.push({ layerId: activeLayer.id, bitmap: snapCanvas });
+       if (undoStackRef.current.length > 20) undoStackRef.current.shift();
+       redoStackRef.current = [];
+    }
+
     activeLayer.ctx.clearRect(0, 0, activeLayer.canvas.width, activeLayer.canvas.height);
     if (state.layers[state.layers.length - 1].id === activeLayer.id) {
       activeLayer.ctx.fillStyle = '#ffffff';
       activeLayer.ctx.fillRect(0, 0, activeLayer.canvas.width, activeLayer.canvas.height);
     }
     
-    recompositeLayers();
-  }, [recompositeLayers]);
+    scheduleComposite();
+  }, [scheduleComposite]);
+
+  // Fill specific layer with current brush color
+  const fillCanvas = useCallback(() => {
+    const state = paintStateRef.current;
+    if (!state.activeLayerId) return;
+    const activeLayer = state.layers.find(l => l.id === state.activeLayerId);
+    if (!activeLayer) return;
+
+    // Save for undo
+    if (typeof createImageBitmap !== 'undefined') {
+       createImageBitmap(activeLayer.canvas).then(bitmap => {
+         undoStackRef.current.push({ layerId: activeLayer.id, bitmap });
+         if (undoStackRef.current.length > 20) {
+             const oldest = undoStackRef.current.shift();
+             if (oldest && 'close' in oldest.bitmap) oldest.bitmap.close();
+         }
+         redoStackRef.current.forEach(item => {
+             if ('close' in item.bitmap) item.bitmap.close();
+         });
+         redoStackRef.current = [];
+       });
+    } else {
+       const snapCanvas = document.createElement('canvas');
+       snapCanvas.width = activeLayer.canvas.width;
+       snapCanvas.height = activeLayer.canvas.height;
+       snapCanvas.getContext('2d')?.drawImage(activeLayer.canvas, 0, 0);
+       undoStackRef.current.push({ layerId: activeLayer.id, bitmap: snapCanvas });
+       if (undoStackRef.current.length > 20) undoStackRef.current.shift();
+       redoStackRef.current = [];
+    }
+
+    // Erase mode clears the layer (like clearCanvas) or paints with transparency/eraser mode
+    if (brushSettings.mode === 'erase') {
+        activeLayer.ctx.clearRect(0, 0, activeLayer.canvas.width, activeLayer.canvas.height);
+        if (state.layers[state.layers.length - 1].id === activeLayer.id) {
+          activeLayer.ctx.fillStyle = '#ffffff';
+          activeLayer.ctx.fillRect(0, 0, activeLayer.canvas.width, activeLayer.canvas.height);
+        }
+    } else {
+        // Normal block: Use source-over inside canvas to overlay color
+        activeLayer.ctx.globalCompositeOperation = 'source-over';
+        activeLayer.ctx.fillStyle = brushSettings.color;
+        activeLayer.ctx.fillRect(0, 0, activeLayer.canvas.width, activeLayer.canvas.height);
+    }
+    
+    scheduleComposite();
+  }, [scheduleComposite, brushSettings]);
 
   // Export texture
   const exportTexture = useCallback(() => {
@@ -733,12 +886,67 @@ export function use3DPaint(
     recompositeLayers();
   }, [recompositeLayers]);
 
+  const undo = useCallback(() => {
+    const state = paintStateRef.current;
+    const last = undoStackRef.current.pop();
+    if (last) {
+      const layer = state.layers.find(l => l.id === last.layerId);
+      if (layer) {
+        if (typeof createImageBitmap !== 'undefined') {
+           createImageBitmap(layer.canvas).then(bitmap => {
+             redoStackRef.current.push({ layerId: layer.id, bitmap });
+             layer.ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+             layer.ctx.drawImage(last.bitmap, 0, 0);
+             scheduleComposite();
+           });
+        } else {
+           const snapCanvas = document.createElement('canvas');
+           snapCanvas.width = layer.canvas.width;
+           snapCanvas.height = layer.canvas.height;
+           snapCanvas.getContext('2d')?.drawImage(layer.canvas, 0, 0);
+           redoStackRef.current.push({ layerId: layer.id, bitmap: snapCanvas });
+           layer.ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+           layer.ctx.drawImage(last.bitmap, 0, 0);
+           scheduleComposite();
+        }
+      }
+    }
+  }, [scheduleComposite]);
+
+  const redo = useCallback(() => {
+    const state = paintStateRef.current;
+    const next = redoStackRef.current.pop();
+    if (next) {
+      const layer = state.layers.find(l => l.id === next.layerId);
+      if (layer) {
+        if (typeof createImageBitmap !== 'undefined') {
+           createImageBitmap(layer.canvas).then(bitmap => {
+             undoStackRef.current.push({ layerId: layer.id, bitmap });
+             layer.ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+             layer.ctx.drawImage(next.bitmap, 0, 0);
+             scheduleComposite();
+           });
+        } else {
+           const snapCanvas = document.createElement('canvas');
+           snapCanvas.width = layer.canvas.width;
+           snapCanvas.height = layer.canvas.height;
+           snapCanvas.getContext('2d')?.drawImage(layer.canvas, 0, 0);
+           undoStackRef.current.push({ layerId: layer.id, bitmap: snapCanvas });
+           layer.ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+           layer.ctx.drawImage(next.bitmap, 0, 0);
+           scheduleComposite();
+        }
+      }
+    }
+  }, [scheduleComposite]);
+
   return {
     initPaintCanvas,
     startPainting,
     paint,
     stopPainting,
     clearCanvas,
+    fillCanvas,
     exportTexture,
     importTexture,
     getTexture,
@@ -751,12 +959,9 @@ export function use3DPaint(
     removeLayer,
     setLayerActive,
     moveLayer,
+    undo,
+    redo,
   };
 }
 
-function hexToRgba(hex: string, alpha: number = 1): { r: number; g: number; b: number; a: number } {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return { r, g, b, a: alpha };
-}
+

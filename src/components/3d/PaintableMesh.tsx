@@ -26,6 +26,9 @@ interface PaintableMeshProps {
   flatShading?: boolean;
   textureResolution?: number;
   matcapName?: string | null;
+  objectColor?: string;
+  roughness?: number;
+  metalness?: number;
   onPaintingChange?: (isPainting: boolean) => void;
   onLayerControlsReady?: (controls: any) => void;
 }
@@ -38,6 +41,9 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
   flatShading = false,
   textureResolution = 2048,
   matcapName = null,
+  objectColor = '#e5e5e5',
+  roughness = 0.8,
+  metalness = 0.1,
   onPaintingChange,
   onLayerControlsReady,
 }) => {
@@ -46,11 +52,13 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
   const { camera, gl } = useThree();
   const raycaster = useRef(new THREE.Raycaster());
   const mouse = useRef(new THREE.Vector2());
+  const pointerRafRef = useRef<number>(0);
+  const pointerEventData = useRef<{ event: React.PointerEvent<THREE.Mesh>, isDown: boolean } | null>(null);
   const [cursor, setCursor] = useState<{ point: THREE.Vector3; normal: THREE.Vector3; radius: number } | null>(null);
   
   const { 
     initPaintCanvas, startPainting, paint, stopPainting, textureSize,
-    layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas
+    layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas, undo, redo
   } = use3DPaint(
     meshRef,
     brushSettings
@@ -58,9 +66,9 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
 
   useEffect(() => {
     if (onLayerControlsReady) {
-      onLayerControlsReady({ layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas });
+      onLayerControlsReady({ layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas, undo, redo });
     }
-  }, [layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas, onLayerControlsReady]);
+  }, [layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas, undo, redo, onLayerControlsReady]);
 
   const [activeTexture, setActiveTexture] = useState<THREE.CanvasTexture | null>(null);
 
@@ -87,7 +95,7 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
     }
   }, [matcapName]);
 
-  // Update material when texture changes
+  // Update material when texture or material props change
   useEffect(() => {
     if (meshRef.current) {
       if (matcapName && matcapTexture) {
@@ -95,19 +103,19 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
            matcap: matcapTexture,
            map: activeTexture || null,
            flatShading: flatShading,
-           color: '#ffffff'
+           color: objectColor
          });
       } else {
          meshRef.current.material = new THREE.MeshStandardMaterial({
            map: activeTexture || null,
-           roughness: 0.7,
-           metalness: 0.1,
+           roughness: roughness,
+           metalness: metalness,
            flatShading: flatShading,
-           color: '#ffffff'
+           color: objectColor
          });
       }
     }
-  }, [activeTexture, flatShading, matcapName, matcapTexture]);
+  }, [activeTexture, flatShading, matcapName, matcapTexture, objectColor, roughness, metalness]);
 
   const updateCursor = useCallback((intersects: THREE.Intersection[]) => {
     if (intersects.length > 0) {
@@ -128,25 +136,27 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
     }
   }, [camera, brushSettings.size]);
 
-  // Handle mouse events for painting
-  const handlePointerDown = useCallback(
-    (event: React.PointerEvent<THREE.Mesh>) => {
-      event.stopPropagation();
-      
-      const mesh = meshRef.current;
-      if (!mesh) return;
+  const processPointerEvent = useCallback(() => {
+    pointerRafRef.current = 0;
+    const data = pointerEventData.current;
+    if (!data) return;
+    pointerEventData.current = null;
 
-      const nativeEvent = event.nativeEvent;
-      const rect = gl.domElement.getBoundingClientRect();
-      mouse.current.x = ((nativeEvent.clientX - rect.left) / rect.width) * 2 - 1;
-      mouse.current.y = -((nativeEvent.clientY - rect.top) / rect.height) * 2 + 1;
+    const { event, isDown } = data;
+    const mesh = meshRef.current;
+    if (!mesh) return;
 
-      raycaster.current.setFromCamera(mouse.current, camera);
-      
-      const intersects = raycaster.current.intersectObject(mesh);
-      updateCursor(intersects);
+    const nativeEvent = event.nativeEvent;
+    const rect = gl.domElement.getBoundingClientRect();
+    mouse.current.x = ((nativeEvent.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.current.y = -((nativeEvent.clientY - rect.top) / rect.height) * 2 + 1;
 
-      if (intersects.length > 0) {
+    raycaster.current.setFromCamera(mouse.current, camera);
+    const intersects = raycaster.current.intersectObject(mesh);
+    updateCursor(intersects);
+
+    if (intersects.length > 0) {
+      if (isDown) {
         onPaintingChange?.(true);
         startPainting(
           intersects[0],
@@ -156,27 +166,7 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
           textureSize.height
         );
         gl.domElement.setPointerCapture(nativeEvent.pointerId);
-      }
-    },
-    [camera, gl, startPainting, textureSize, onPaintingChange, updateCursor]
-  );
-
-  const handlePointerMove = useCallback(
-    (event: React.PointerEvent<THREE.Mesh>) => {
-      const mesh = meshRef.current;
-      if (!mesh) return;
-
-      const nativeEvent = event.nativeEvent;
-      const rect = gl.domElement.getBoundingClientRect();
-      mouse.current.x = ((nativeEvent.clientX - rect.left) / rect.width) * 2 - 1;
-      mouse.current.y = -((nativeEvent.clientY - rect.top) / rect.height) * 2 + 1;
-
-      raycaster.current.setFromCamera(mouse.current, camera);
-      
-      const intersects = raycaster.current.intersectObject(mesh);
-      updateCursor(intersects);
-
-      if (intersects.length > 0) {
+      } else {
         paint(
           mouse.current,
           mesh,
@@ -185,15 +175,45 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
           textureSize.height
         );
       }
+    }
+  }, [camera, gl, startPainting, paint, textureSize, onPaintingChange, updateCursor]);
+
+  // Handle mouse events for painting
+  const handlePointerDown = useCallback(
+    (event: React.PointerEvent<THREE.Mesh>) => {
+      event.stopPropagation();
+      // Execute immediately for responsiveness on initial touch
+      pointerEventData.current = { event, isDown: true };
+      processPointerEvent();
     },
-    [camera, gl, paint, textureSize, updateCursor]
+    [processPointerEvent]
+  );
+
+  const handlePointerMove = useCallback(
+    (event: React.PointerEvent<THREE.Mesh>) => {
+      // Throttle pointer move to 1 call per frame (fixes 120Hz/240Hz tablet lag)
+      pointerEventData.current = { event, isDown: false };
+      if (pointerRafRef.current === 0) {
+        pointerRafRef.current = requestAnimationFrame(processPointerEvent);
+      }
+    },
+    [processPointerEvent]
   );
 
   const handlePointerUp = useCallback(
     (event: React.PointerEvent<THREE.Mesh>) => {
       event.stopPropagation();
+      
+      // Clear any pending frame
+      if (pointerRafRef.current !== 0) {
+        cancelAnimationFrame(pointerRafRef.current);
+        pointerRafRef.current = 0;
+        pointerEventData.current = null;
+      }
+
       onPaintingChange?.(false);
       stopPainting();
+      
       const nativeEvent = event.nativeEvent;
       try {
         gl.domElement.releasePointerCapture(nativeEvent.pointerId);
@@ -208,6 +228,14 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
     handlePointerUp(event);
     setCursor(null);
   }, [handlePointerUp]);
+
+  useEffect(() => {
+    return () => {
+      if (pointerRafRef.current !== 0) {
+        cancelAnimationFrame(pointerRafRef.current);
+      }
+    };
+  }, []);
 
   // Geometry is passed directly to the mesh props to avoid R3F <primitive> attach/detach issues across multiple meshes
 

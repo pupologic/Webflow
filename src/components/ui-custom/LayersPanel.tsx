@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import type { Layer } from '@/hooks/use3DPaint';
 import { Layers, Plus, Trash2, Eye, EyeOff, ArrowUp, ArrowDown } from 'lucide-react';
 import { Slider } from '@/components/ui/slider';
@@ -40,6 +40,34 @@ export const LayersPanel: React.FC<LayersPanelProps> = ({ layerControls }) => {
   if (!layerControls) return null;
 
   const { layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer } = layerControls;
+  const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editingLayerId && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [editingLayerId]);
+
+  const startEditing = (e: React.MouseEvent, id: string, name: string) => {
+    e.stopPropagation();
+    setEditingLayerId(id);
+    setEditName(name);
+  };
+
+  const saveRename = () => {
+    if (editingLayerId) {
+      updateLayer(editingLayerId, { name: editName });
+      setEditingLayerId(null);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') saveRename();
+    if (e.key === 'Escape') setEditingLayerId(null);
+  };
 
   return (
     <div className="bg-[#09090b] rounded-xl p-5 border border-white/5 shadow-lg">
@@ -78,12 +106,25 @@ export const LayersPanel: React.FC<LayersPanelProps> = ({ layerControls }) => {
                 {layer.visible ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
               </button>
               
-              <button
-                className="flex-1 text-left truncate text-sm font-medium focus:outline-none"
-                onClick={() => setLayerActive(layer.id)}
-              >
-                {layer.name}
-              </button>
+              {editingLayerId === layer.id ? (
+                <input
+                  ref={inputRef}
+                  className="flex-1 bg-zinc-900 text-white text-sm font-medium border border-zinc-600 rounded px-2 py-0.5 outline-none focus:ring-1 focus:ring-zinc-400"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  onBlur={saveRename}
+                  onKeyDown={handleKeyDown}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              ) : (
+                <button
+                  className="flex-1 text-left truncate text-sm font-medium focus:outline-none text-white hover:text-zinc-200"
+                  onClick={() => setLayerActive(layer.id)}
+                  onDoubleClick={(e) => startEditing(e, layer.id, layer.name)}
+                >
+                  {layer.name}
+                </button>
+              )}
 
               <button
                 className="flex-shrink-0 text-gray-500 hover:text-white disabled:opacity-30 disabled:hover:text-gray-500"

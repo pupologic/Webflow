@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Grid, Environment, Stats } from '@react-three/drei';
+import { Canvas, useThree } from '@react-three/fiber';
+import { OrbitControls, Grid, Environment } from '@react-three/drei';
 import * as THREE from 'three';
 import { PaintableMesh } from './PaintableMesh';
 import type { BrushSettings } from '@/hooks/use3DPaint';
@@ -12,13 +12,44 @@ interface Scene3DProps {
   showWireframe?: boolean;
   flatShading?: boolean;
   textureResolution?: number;
-  backgroundColor?: string;
   matcapName?: string | null;
   lightSetup?: '3point' | 'directional' | 'ambient';
   lightIntensity?: number;
+  focalLength?: number;
+  objectColor?: string;
+  roughness?: number;
+  metalness?: number;
+  envIntensity?: number;
+  envRotation?: number;
+  backgroundColor?: string;
   onTextureChange?: (texture: THREE.CanvasTexture | null) => void;
   onLayerControlsReady?: (controls: any) => void;
 }
+
+const CameraController = ({ focalLength }: { focalLength: number }) => {
+  const { camera } = useThree();
+  const { gl } = useThree();
+
+  React.useEffect(() => {
+    if (camera instanceof THREE.PerspectiveCamera) {
+      camera.setFocalLength(focalLength);
+      camera.updateProjectionMatrix();
+    }
+  }, [camera, focalLength, gl.domElement.clientWidth, gl.domElement.clientHeight]);
+
+  return null;
+};
+
+const EnvRotator = ({ envRotation }: { envRotation: number }) => {
+  const { scene } = useThree();
+  React.useEffect(() => {
+    if (scene.environmentRotation) {
+      scene.environmentRotation.y = envRotation;
+      scene.backgroundRotation.y = envRotation;
+    }
+  }, [scene, envRotation]);
+  return null;
+};
 
 export const Scene3D: React.FC<Scene3DProps> = ({
   brushSettings,
@@ -31,6 +62,12 @@ export const Scene3D: React.FC<Scene3DProps> = ({
   matcapName = null,
   lightSetup = '3point',
   lightIntensity = 1,
+  focalLength = 35,
+  objectColor = '#e5e5e5',
+  roughness = 0.8,
+  metalness = 0.1,
+  envIntensity = 1,
+  envRotation = 0,
   onTextureChange,
   onLayerControlsReady,
 }) => {
@@ -63,13 +100,23 @@ export const Scene3D: React.FC<Scene3DProps> = ({
         }}
         style={{ width: '100%', height: '100%' }}
       >
+        <CameraController focalLength={focalLength} />
         <color attach="background" args={[backgroundColor]} />
         
         {/* Performance Stats */}
-        <Stats />
         
+        {/* Absolute reliable environment and background rotation */}
+        <EnvRotator envRotation={envRotation} />
+
         {/* Environment (fallback when no lights or just a small reflection) */}
-        {!matcapName && <Environment preset="studio" />}
+        {!matcapName && (
+          <Environment 
+            preset="studio" 
+            environmentIntensity={envIntensity} 
+            backgroundRotation={[0, envRotation, 0]} 
+            environmentRotation={[0, envRotation, 0]} 
+          />
+        )}
         
         {/* Grid */}
         {showGrid && (
@@ -97,36 +144,43 @@ export const Scene3D: React.FC<Scene3DProps> = ({
           flatShading={flatShading}
           textureResolution={textureResolution}
           matcapName={matcapName}
+          objectColor={objectColor}
+          roughness={roughness}
+          metalness={metalness}
           onPaintingChange={handlePaintingChange}
           onLayerControlsReady={onLayerControlsReady}
         />
 
-        {/* Lights */}
-        {lightSetup === '3point' && (
-          <group>
-            <ambientLight intensity={0.6 * lightIntensity} />
-            <directionalLight position={[5, 5, 5]} intensity={1 * lightIntensity} />
-            <directionalLight position={[-5, -5, -5]} intensity={0.5 * lightIntensity} />
-            <pointLight position={[0, 5, 0]} intensity={0.5 * lightIntensity} />
-          </group>
-        )}
-        
-        {lightSetup === 'directional' && (
-          <group>
-            <ambientLight intensity={0.2 * lightIntensity} />
-            <directionalLight position={[10, 10, 5]} intensity={1.5 * lightIntensity} />
-          </group>
-        )}
+        {/* Lights (all grouped so rotation applies consistently to the lighting setup) */}
+        <group rotation={[0, envRotation, 0]}>
+          {lightSetup === '3point' && (
+            <>
+              <ambientLight intensity={0.6 * lightIntensity} />
+              <directionalLight position={[5, 5, 5]} intensity={1 * lightIntensity} />
+              <directionalLight position={[-5, -5, -5]} intensity={0.5 * lightIntensity} />
+              {/* Offset pointLight slightly off center so it actually revolves when rotated */}
+              <pointLight position={[1, 5, 1]} intensity={0.5 * lightIntensity} />
+            </>
+          )}
+          
+          {lightSetup === 'directional' && (
+            <>
+              <ambientLight intensity={0.2 * lightIntensity} />
+              <directionalLight position={[10, 10, 5]} intensity={1.5 * lightIntensity} />
+            </>
+          )}
 
-        {lightSetup === 'ambient' && (
-          <ambientLight intensity={1.5 * lightIntensity} />
-        )}
+          {lightSetup === 'ambient' && (
+            <ambientLight intensity={1.5 * lightIntensity} />
+          )}
+        </group>
 
         {/* Camera Controls */}
         <OrbitControls
           ref={controlsRef}
           makeDefault
-          minDistance={3}
+          enableDamping={false}
+          minDistance={0.5}
           maxDistance={20}
           target={[0, 0, 0]}
         />

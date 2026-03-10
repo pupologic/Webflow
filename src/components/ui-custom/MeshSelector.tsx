@@ -7,12 +7,20 @@ interface MeshSelectorProps {
   modelName: string;
   onNameChange: (name: string) => void;
   onObjUpload?: (file: File) => void;
+  showWireframe?: boolean;
+  setShowWireframe?: (show: boolean) => void;
+  flatShading?: boolean;
+  setFlatShading?: (flat: boolean) => void;
 }
 
 export const MeshSelector: React.FC<MeshSelectorProps> = ({
   modelName,
   onNameChange,
   onObjUpload,
+  showWireframe = false,
+  setShowWireframe,
+  flatShading = false,
+  setFlatShading,
 }) => {
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -39,6 +47,38 @@ export const MeshSelector: React.FC<MeshSelectorProps> = ({
         />
         <PencilLine className="w-4 h-4 text-zinc-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
       </div>
+      
+      {setShowWireframe && setFlatShading && (
+        <div className="flex items-center gap-4 pt-4 border-t border-white/10">
+          <div className="flex items-center gap-2">
+            <input 
+              type="checkbox" 
+              id="wireframe-toggle"
+              checked={showWireframe} 
+              onChange={(e) => setShowWireframe(e.target.checked)} 
+              className="accent-zinc-500 w-3.5 h-3.5"
+            />
+            <label htmlFor="wireframe-toggle" className="text-zinc-400 text-xs flex items-center gap-1 cursor-pointer hover:text-zinc-200 transition-colors">
+              <Box className="w-3.5 h-3.5" />
+              Wire
+            </label>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <input 
+              type="checkbox" 
+              id="flatshading-toggle"
+              checked={flatShading} 
+              onChange={(e) => setFlatShading(e.target.checked)} 
+              className="accent-zinc-500 w-3.5 h-3.5"
+            />
+            <label htmlFor="flatshading-toggle" className="text-zinc-400 text-xs flex items-center gap-1 cursor-pointer hover:text-zinc-200 transition-colors">
+              <Box className="w-3.5 h-3.5" />
+              Flat
+            </label>
+          </div>
+        </div>
+      )}
 
       <div className="mt-4">
         <Button

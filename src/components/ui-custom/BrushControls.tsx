@@ -26,10 +26,6 @@ export const BrushControls: React.FC<BrushControlsProps> = ({
     onBrushSettingsChange({ ...brushSettings, opacity: value[0] });
   };
 
-  const handleHardnessChange = (value: number[]) => {
-    onBrushSettingsChange({ ...brushSettings, hardness: value[0] });
-  };
-
   const handleSpacingChange = (value: number[]) => {
     onBrushSettingsChange({ ...brushSettings, spacing: value[0] });
   };
@@ -96,22 +92,6 @@ export const BrushControls: React.FC<BrushControlsProps> = ({
         />
       </div>
 
-      {/* Brush Hardness */}
-      <div className="space-y-2">
-        <div className="flex justify-between">
-          <Label className="text-zinc-400 text-xs tracking-wide">HARDNESS</Label>
-          <span className="text-zinc-500 font-mono text-[10px]">{Math.round(brushSettings.hardness * 100)}%</span>
-        </div>
-        <Slider
-          value={[brushSettings.hardness]}
-          onValueChange={handleHardnessChange}
-          min={0}
-          max={1}
-          step={0.01}
-          className="w-full"
-        />
-      </div>
-
       {/* Brush Spacing */}
       <div className="space-y-2">
         <div className="flex justify-between">
@@ -140,9 +120,6 @@ export const BrushControls: React.FC<BrushControlsProps> = ({
                 height: Math.min(brushSettings.size, 80),
                 backgroundColor: brushSettings.color,
                 opacity: brushSettings.opacity,
-                boxShadow: brushSettings.hardness < 1 
-                  ? `0 0 ${brushSettings.size * 0.3}px ${brushSettings.color}` 
-                  : 'none',
               }}
             />
           )}
