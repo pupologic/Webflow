@@ -8,7 +8,7 @@ import { MeshSelector } from '@/components/ui-custom/MeshSelector';
 import { LayersPanel } from '@/components/ui-custom/LayersPanel';
 import { EnvironmentPanel } from '@/components/ui-custom/EnvironmentPanel';
 import { MaterialPanel } from '@/components/ui-custom/MaterialPanel';
-import type { BrushSettings } from '@/hooks/use3DPaint';
+import type { BrushSettings } from '@/hooks/useWebGLPaint';
 import { Brush, Box, Layers, Image as ImageIcon, Sun, Eraser, Undo2, Redo2, Columns2, Boxes, PaintBucket } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Slider } from '@/components/ui/slider';
@@ -24,7 +24,7 @@ function App() {
     size: 20,
     color: '#ff0000',
     opacity: 1,
-    spacing: 0.25,
+    hardness: 0.8,
     type: 'circle',
     mode: 'paint',
   });
@@ -43,7 +43,7 @@ function App() {
   const [layerControls, setLayerControls] = useState<any>(null);
   
   // Environment controls
-  const [matcapName, setMatcapName] = useState<string | null>(null);
+  const [matcapName, setMatcapName] = useState<string | null>('softlight_grey.png');
   const [lightSetup, setLightSetup] = useState<'3point' | 'directional' | 'ambient'>('3point');
   const [lightIntensity, setLightIntensity] = useState(1);
   const [focalLength, setFocalLength] = useState(35);

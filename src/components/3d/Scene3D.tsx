@@ -3,7 +3,7 @@ import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, Grid, Environment } from '@react-three/drei';
 import * as THREE from 'three';
 import { PaintableMesh } from './PaintableMesh';
-import type { BrushSettings } from '@/hooks/use3DPaint';
+import type { BrushSettings } from '@/hooks/useWebGLPaint';
 
 interface Scene3DProps {
   brushSettings: BrushSettings;
@@ -43,9 +43,12 @@ const CameraController = ({ focalLength }: { focalLength: number }) => {
 const EnvRotator = ({ envRotation }: { envRotation: number }) => {
   const { scene } = useThree();
   React.useEffect(() => {
+    // In newer Three.js versions, environmentRotation is a Euler which requires .set()
     if (scene.environmentRotation) {
-      scene.environmentRotation.y = envRotation;
-      scene.backgroundRotation.y = envRotation;
+      scene.environmentRotation.set(0, envRotation, 0, 'XYZ');
+    }
+    if (scene.backgroundRotation) {
+      scene.backgroundRotation.set(0, envRotation, 0, 'XYZ');
     }
   }, [scene, envRotation]);
   return null;
@@ -156,9 +159,8 @@ export const Scene3D: React.FC<Scene3DProps> = ({
           {lightSetup === '3point' && (
             <>
               <ambientLight intensity={0.6 * lightIntensity} />
-              <directionalLight position={[5, 5, 5]} intensity={1 * lightIntensity} />
-              <directionalLight position={[-5, -5, -5]} intensity={0.5 * lightIntensity} />
-              {/* Offset pointLight slightly off center so it actually revolves when rotated */}
+              <directionalLight position={[5, 4, 5]} intensity={1 * lightIntensity} />
+              <directionalLight position={[-5, -4, -5]} intensity={0.5 * lightIntensity} />
               <pointLight position={[1, 5, 1]} intensity={0.5 * lightIntensity} />
             </>
           )}
@@ -166,7 +168,7 @@ export const Scene3D: React.FC<Scene3DProps> = ({
           {lightSetup === 'directional' && (
             <>
               <ambientLight intensity={0.2 * lightIntensity} />
-              <directionalLight position={[10, 10, 5]} intensity={1.5 * lightIntensity} />
+              <directionalLight position={[2, 5, 5]} intensity={1.5 * lightIntensity} />
             </>
           )}
 

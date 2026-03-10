@@ -1,8 +1,9 @@
 import React from 'react';
 import { Slider } from '@/components/ui/slider';
 import { Label } from '@/components/ui/label';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Circle, Square } from 'lucide-react';
-import type { BrushSettings } from '@/hooks/use3DPaint';
+import type { BrushSettings } from '@/hooks/useWebGLPaint';
 
 const PRESET_BRUSHES = [
   { id: 'circle', type: 'circle' as const, label: 'Round', icon: <Circle className="w-4 h-4" /> },
@@ -22,12 +23,8 @@ export const BrushControls: React.FC<BrushControlsProps> = ({
     onBrushSettingsChange({ ...brushSettings, size: value[0] });
   };
 
-  const handleOpacityChange = (value: number[]) => {
-    onBrushSettingsChange({ ...brushSettings, opacity: value[0] });
-  };
-
-  const handleSpacingChange = (value: number[]) => {
-    onBrushSettingsChange({ ...brushSettings, spacing: value[0] });
+  const handleHardnessChange = (value: number[]) => {
+    onBrushSettingsChange({ ...brushSettings, hardness: value[0] });
   };
 
   return (
@@ -76,34 +73,20 @@ export const BrushControls: React.FC<BrushControlsProps> = ({
         />
       </div>
 
-      {/* Brush Opacity */}
-      <div className="space-y-2">
-        <div className="flex justify-between">
-          <Label className="text-zinc-400 text-xs tracking-wide">OPACITY</Label>
-          <span className="text-zinc-500 font-mono text-[10px]">{Math.round(brushSettings.opacity * 100)}%</span>
+      {/* Brush Hardness */}
+      <div className="space-y-4 pt-4 border-t border-white/10">
+        <div className="flex justify-between items-center px-1">
+          <span className="text-sm font-medium text-zinc-300">Hardness</span>
+          <span className="text-sm text-zinc-500 w-12 text-right">
+            {(brushSettings.hardness * 100).toFixed(0)}%
+          </span>
         </div>
         <Slider
-          value={[brushSettings.opacity]}
-          onValueChange={handleOpacityChange}
+          value={[brushSettings.hardness]}
+          onValueChange={handleHardnessChange}
           min={0.01}
           max={1}
           step={0.01}
-          className="w-full"
-        />
-      </div>
-
-      {/* Brush Spacing */}
-      <div className="space-y-2">
-        <div className="flex justify-between">
-          <Label className="text-zinc-400 text-xs tracking-wide">SPACING</Label>
-          <span className="text-zinc-500 font-mono text-[10px]">{Math.round((brushSettings.spacing || 0.25) * 100)}%</span>
-        </div>
-        <Slider
-          value={[brushSettings.spacing || 0.25]}
-          onValueChange={handleSpacingChange}
-          min={0.05}
-          max={2}
-          step={0.05}
           className="w-full"
         />
       </div>

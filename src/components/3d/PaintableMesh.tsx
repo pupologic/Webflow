@@ -1,14 +1,15 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import { use3DPaint } from '@/hooks/use3DPaint';
-import type { BrushSettings } from '@/hooks/use3DPaint';
+import { useWebGLPaint } from '@/hooks/useWebGLPaint';
+import type { BrushSettings } from '@/hooks/useWebGLPaint';
 
 import grayClay from '@/matcap/gray_clay_010001.png';
 import lightGrey from '@/matcap/light_grey_010001.png';
 import merge1 from '@/matcap/merge0001.png';
 import merge2 from '@/matcap/merge0002.png';
 import warmClay from '@/matcap/warm_clay_010001.png';
+import softlightGrey from '@/matcap/softlight_grey.png';
 
 const MATCAPS_URLS: Record<string, string> = {
   'gray_clay_010001.png': grayClay,
@@ -16,6 +17,7 @@ const MATCAPS_URLS: Record<string, string> = {
   'merge0001.png': merge1,
   'merge0002.png': merge2,
   'warm_clay_010001.png': warmClay,
+  'softlight_grey.png': softlightGrey,
 };
 
 interface PaintableMeshProps {
@@ -57,29 +59,30 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
   const [cursor, setCursor] = useState<{ point: THREE.Vector3; normal: THREE.Vector3; radius: number } | null>(null);
   
   const { 
-    initPaintCanvas, startPainting, paint, stopPainting, textureSize,
-    layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas, fillCanvas, undo, redo
-  } = use3DPaint(
+    initPaintSystem, startPainting, paint, stopPainting,
+    texture,
+    layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas, fillCanvas, undo, redo, exportTexture
+  } = useWebGLPaint(
     meshRef,
-    brushSettings
+     brushSettings
   );
 
   useEffect(() => {
     if (onLayerControlsReady) {
-      onLayerControlsReady({ layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas, fillCanvas, undo, redo });
+      onLayerControlsReady({ layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas, fillCanvas, undo, redo, exportTexture });
     }
-  }, [layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas, fillCanvas, undo, redo, onLayerControlsReady]);
-
-  const [activeTexture, setActiveTexture] = useState<THREE.CanvasTexture | null>(null);
+  }, [layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas, fillCanvas, undo, redo, exportTexture, onLayerControlsReady]);
 
   // Initialize texture on mount and when resolution changes
   useEffect(() => {
-    const texture = initPaintCanvas(textureResolution, textureResolution);
-    setActiveTexture(texture);
+    initPaintSystem(textureResolution);
+  }, [initPaintSystem, textureResolution]);
+
+  useEffect(() => {
     if (texture && onTextureChange) {
-      onTextureChange(texture);
+      onTextureChange(texture as any);
     }
-  }, [initPaintCanvas, textureResolution, onTextureChange]);
+  }, [texture, onTextureChange]);
 
   const [matcapTexture, setMatcapTexture] = useState<THREE.Texture | null>(null);
 
@@ -99,15 +102,15 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
   useEffect(() => {
     if (meshRef.current) {
       if (matcapName && matcapTexture) {
-         meshRef.current.material = new THREE.MeshMatcapMaterial({
+          meshRef.current.material = new THREE.MeshMatcapMaterial({
            matcap: matcapTexture,
-           map: activeTexture || null,
+           map: texture || null,
            flatShading: flatShading,
            color: objectColor
          });
       } else {
          meshRef.current.material = new THREE.MeshStandardMaterial({
-           map: activeTexture || null,
+           map: texture || null,
            roughness: roughness,
            metalness: metalness,
            flatShading: flatShading,
@@ -115,7 +118,7 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
          });
       }
     }
-  }, [activeTexture, flatShading, matcapName, matcapTexture, objectColor, roughness, metalness]);
+  }, [texture, flatShading, matcapName, matcapTexture, objectColor, roughness, metalness]);
 
   const updateCursor = useCallback((intersects: THREE.Intersection[]) => {
     if (intersects.length > 0) {
@@ -158,25 +161,13 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
     if (intersects.length > 0) {
       if (isDown) {
         onPaintingChange?.(true);
-        startPainting(
-          intersects[0],
-          mouse.current,
-          camera,
-          textureSize.width,
-          textureSize.height
-        );
+        startPainting(intersects[0]);
         gl.domElement.setPointerCapture(nativeEvent.pointerId);
       } else {
-        paint(
-          mouse.current,
-          mesh,
-          camera,
-          textureSize.width,
-          textureSize.height
-        );
+        paint(intersects[0]);
       }
     }
-  }, [camera, gl, startPainting, paint, textureSize, onPaintingChange, updateCursor]);
+  }, [camera, gl, startPainting, paint, onPaintingChange, updateCursor]);
 
   // Handle mouse events for painting
   const handlePointerDown = useCallback(

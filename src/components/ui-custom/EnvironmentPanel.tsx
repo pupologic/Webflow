@@ -27,6 +27,7 @@ const MATCAPS = [
   { id: 'merge0001.png', label: 'Merge 1' },
   { id: 'merge0002.png', label: 'Merge 2' },
   { id: 'warm_clay_010001.png', label: 'Warm Clay' },
+  { id: 'softlight_grey.png', label: 'Soft Light Grey' },
 ];
 
 export const EnvironmentPanel: React.FC<EnvironmentPanelProps> = ({
@@ -136,6 +137,7 @@ export const EnvironmentPanel: React.FC<EnvironmentPanelProps> = ({
         />
       </div>
 
+      {/* Environment rotation hidden temporarily 
       <div className="space-y-2 pt-2 border-t border-white/5 text-zinc-300">
         <div className="flex justify-between">
           <Label className="text-zinc-500 text-[10px] uppercase tracking-wide">Environment Rotation</Label>
@@ -150,6 +152,7 @@ export const EnvironmentPanel: React.FC<EnvironmentPanelProps> = ({
           className="w-full"
         />
       </div>
+      */}
 
       <div className="space-y-2 pt-2 border-t border-white/5 text-zinc-300">
         <div className="flex justify-between">
