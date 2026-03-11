@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { ProjectManager } from '@/services/ProjectManager';
 import type { SavedProject } from '@/services/ProjectManager';
-import { Plus, FolderOpen, Box, Upload, Trash2, Clock, Palette } from 'lucide-react';
+import { Plus, FolderOpen, Box, Upload, Trash2, Clock, Pencil } from 'lucide-react';
+import logoImg from '@/logo/logo.png';
 
 interface DashboardProps {
   onNewProject: (modelType: 'Suzanne' | 'Cube', file?: File) => void;
@@ -60,8 +61,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onLoadProjec
       
       <header className="mb-12 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="bg-blue-600/20 p-3 rounded-xl border border-blue-500/30">
-            <Palette className="w-8 h-8 text-blue-400" />
+          <div className="bg-white/5 p-2 rounded-xl border border-white/10 w-14 h-14 flex items-center justify-center overflow-hidden shadow-lg">
+            <img src={logoImg} alt="Logo" className="w-full h-full object-contain" />
           </div>
           <div>
             <h1 className="text-3xl font-bold tracking-tight">3D Web Painter</h1>
@@ -133,14 +134,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onLoadProjec
                   className="relative group border border-white/10 bg-[#121214] hover:bg-[#18181b] hover:border-blue-500/50 p-5 rounded-2xl cursor-pointer transition-all flex flex-col"
                 >
                   <div className="flex justify-between items-start mb-4">
-                    <div className="flex flex-col min-w-0 pr-2">
-                       <h3 className="font-bold text-lg text-zinc-100 group-hover:text-blue-400 transition-colors truncate">{p.name}</h3>
+                    <div className="flex items-center gap-2 min-w-0 pr-2">
                        <button 
                          onClick={(e) => handleRename(e, p.id, p.name)}
-                         className="text-[10px] text-zinc-500 hover:text-zinc-300 text-left w-fit"
+                         className="p-1.5 rounded-md hover:bg-white/10 text-zinc-500 hover:text-blue-400 transition-colors"
+                         title="Renomear Projeto"
                        >
-                         Renomear
+                         <Pencil className="w-3.5 h-3.5" />
                        </button>
+                       <h3 className="font-bold text-lg text-zinc-100 group-hover:text-blue-400 transition-colors truncate">{p.name}</h3>
                     </div>
                     <button 
                       onClick={(e) => handleDelete(e, p.id)}
