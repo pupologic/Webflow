@@ -36,10 +36,22 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onLoadProjec
     }
   };
 
+  const handleRename = async (e: React.MouseEvent, id: string, oldName: string) => {
+    e.stopPropagation();
+    const newName = prompt('Renomear projeto para:', oldName);
+    if (newName && newName !== oldName) {
+      const project = projects.find(p => p.id === id);
+      if (project) {
+        await ProjectManager.saveProject({ ...project, name: newName });
+        loadProjects();
+      }
+    }
+  };
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      onNewProject('Cube', file); // Use the file, modelType doesn't matter much if file is present
+      onNewProject('Suzanne', file);
     }
   };
 
@@ -52,8 +64,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onLoadProjec
             <Palette className="w-8 h-8 text-blue-400" />
           </div>
           <div>
-            <h1 className="text-3xl font-bold tracking-tight">3D Painter</h1>
-            <p className="text-zinc-500">Selecione ou crie um projeto para começar</p>
+            <h1 className="text-3xl font-bold tracking-tight">3D Web Painter</h1>
           </div>
         </div>
       </header>
@@ -75,22 +86,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onLoadProjec
               </div>
               <div>
                 <h3 className="font-medium text-zinc-100">Iniciar com Suzanne</h3>
-                <p className="text-xs text-zinc-500">Modelo padrão do Blender</p>
               </div>
             </button>
 
-            <button 
-              onClick={() => onNewProject('Cube')}
-              className="flex items-center gap-4 p-4 rounded-xl border border-white/5 bg-white/5 hover:bg-white/10 hover:border-white/20 transition-all text-left group"
-            >
-              <div className="bg-zinc-800 p-3 rounded-lg group-hover:bg-blue-600/20 transition-colors">
-                <Box className="w-6 h-6 text-zinc-400 group-hover:text-blue-400" />
-              </div>
-              <div>
-                <h3 className="font-medium text-zinc-100">Iniciar com Cubo</h3>
-                <p className="text-xs text-zinc-500">Modelo primitivo simples</p>
-              </div>
-            </button>
+
 
             <div className="relative overflow-hidden flex items-center gap-4 p-4 rounded-xl border border-dashed border-white/20 bg-transparent hover:bg-white/5 hover:border-white/40 transition-all text-left group cursor-pointer">
               <input 
@@ -117,7 +116,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onLoadProjec
             <FolderOpen className="w-5 h-5 text-zinc-400" /> Projetos Recentes
           </h2>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
             {loading ? (
               <p className="text-zinc-500 text-sm">Carregando projetos...</p>
             ) : projects.length === 0 ? (
@@ -134,10 +133,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onLoadProjec
                   className="relative group border border-white/10 bg-[#121214] hover:bg-[#18181b] hover:border-blue-500/50 p-5 rounded-2xl cursor-pointer transition-all flex flex-col"
                 >
                   <div className="flex justify-between items-start mb-4">
-                    <h3 className="font-bold text-lg text-zinc-100 group-hover:text-blue-400 transition-colors">{p.name}</h3>
+                    <div className="flex flex-col min-w-0 pr-2">
+                       <h3 className="font-bold text-lg text-zinc-100 group-hover:text-blue-400 transition-colors truncate">{p.name}</h3>
+                       <button 
+                         onClick={(e) => handleRename(e, p.id, p.name)}
+                         className="text-[10px] text-zinc-500 hover:text-zinc-300 text-left w-fit"
+                       >
+                         Renomear
+                       </button>
+                    </div>
                     <button 
                       onClick={(e) => handleDelete(e, p.id)}
-                      className="opacity-0 group-hover:opacity-100 p-2 text-zinc-500 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all"
+                      className="p-2 text-zinc-500 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all"
                       title="Excluir Projeto"
                     >
                       <Trash2 className="w-4 h-4" />

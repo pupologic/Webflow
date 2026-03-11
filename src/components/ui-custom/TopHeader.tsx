@@ -1,4 +1,5 @@
-import { Brush, Box, Boxes, Image as ImageIcon, Save, Columns2, Home, PaintBucket, Sun, Sparkles, Layers, Eclipse } from 'lucide-react';
+import { Box, Boxes, Image as ImageIcon, Save, Columns2, Home, PaintBucket, Sun, Sparkles, Layers, Eclipse, Brush } from 'lucide-react';
+import logoImg from '@/logo/logo.png';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { MeshSelector } from '@/components/ui-custom/MeshSelector';
 import { TransformPanel } from '@/components/ui-custom/TransformPanel';
@@ -90,11 +91,11 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
         </button>
         
         <div className="flex items-center gap-3 pr-4 border-r border-white/10">
-          <div className="bg-white/5 p-2 rounded-lg border border-white/10">
-            <Brush className="w-4 h-4 text-zinc-300" />
+          <div className="bg-white/5 p-1 rounded-lg border border-white/10 w-9 h-9 flex items-center justify-center overflow-hidden">
+            <img src={logoImg} alt="Logo" className="w-full h-full object-contain" />
           </div>
           <div className="hidden sm:flex items-baseline gap-2">
-            <h1 className="text-xs font-semibold text-zinc-100 tracking-wide">3D PAINTER</h1>
+            <h1 className="text-xs font-semibold text-zinc-100 tracking-wide">3D WEB PAINTER</h1>
             <span className="text-[10px] text-zinc-500 font-medium">v1.4.1</span>
           </div>
         </div>
