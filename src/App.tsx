@@ -79,6 +79,7 @@ function App() {
   const [currentTexture, setCurrentTexture] = useState<THREE.Texture | null>(null);
   const [previewCanvas, setPreviewCanvas] = useState<HTMLCanvasElement | null>(null);
   const [layerControls, setLayerControls] = useState<any>(null);
+  const initialLayersToLoadRef = useRef<any[] | null>(null);
   
   // Environment controls
   const [matcapName, setMatcapName] = useState<string | null>('softlight_grey.png');
@@ -237,6 +238,16 @@ function App() {
     });
   }, []);
 
+  const handleLayerControlsReady = useCallback((controls: any) => {
+    setLayerControls(controls);
+    if (initialLayersToLoadRef.current) {
+      if (controls.importProjectLayersData) {
+        controls.importProjectLayersData(initialLayersToLoadRef.current);
+      }
+      initialLayersToLoadRef.current = null;
+    }
+  }, []);
+
   const handleObjUpload = useCallback((file: File) => {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -280,30 +291,22 @@ function App() {
   const handleSaveProject = async () => {
     if (!layerControls) return;
     try {
+      const exportedLayers = layerControls.exportProjectLayersData ? await layerControls.exportProjectLayersData() : [];
+
       const project: SavedProject = {
         id: currentProjectId || THREE.MathUtils.generateUUID(),
         name: modelName,
         lastModified: Date.now(),
         modelName,
         brushSettings,
-        layersData: layerControls.layers.map((l: any) => ({
-          id: l.id,
-          name: l.name,
-          visible: l.visible,
-          opacity: l.opacity,
-          blendMode: l.blendMode,
-          isFolder: l.isFolder,
-          parentId: l.parentId,
-          maskEnabled: l.maskEnabled,
-          hasMask: !!l.maskTarget
-        }))
+        layersData: exportedLayers
       };
       await ProjectManager.saveProject(project);
       setCurrentProjectId(project.id);
       toast.success('Projeto salvo com sucesso!');
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      toast.error('Erro ao salvar o projeto.');
+      toast.error(`Erro ao salvar: ${e.message || 'Erro desconhecido'}`);
     }
   };
 
@@ -321,6 +324,7 @@ function App() {
     setModelName(project.modelName);
     setBrushSettings(project.brushSettings);
     setCurrentProjectId(project.id);
+    initialLayersToLoadRef.current = project.layersData;
     setIsDashboard(false);
     toast.success('Projeto carregado!');
   };
@@ -428,7 +432,7 @@ function App() {
                 roughness={roughness}
                 metalness={metalness}
                 onTextureChange={handleTextureChange}
-                onLayerControlsReady={setLayerControls}
+                onLayerControlsReady={handleLayerControlsReady}
                 onColorPainted={handleColorPainted}
                 activeStencil={overlays.find(o => o.type === 'stencil' && o.visible)}
               />

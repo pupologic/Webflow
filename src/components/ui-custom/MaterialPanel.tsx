@@ -1,7 +1,7 @@
 import React from 'react';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
-import { Palette, Box } from 'lucide-react';
+import { Palette, Eclipse } from 'lucide-react';
 import { ColorPicker } from './ColorPicker';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 
@@ -27,7 +27,7 @@ export const MaterialPanel: React.FC<MaterialPanelProps> = ({
   return (
     <div className="space-y-6 p-5 bg-[#09090b] rounded-xl border border-white/5 shadow-lg">
       <h3 className="text-zinc-100 font-semibold text-sm tracking-wide uppercase flex items-center gap-2">
-        <Box className="w-4 h-4 text-zinc-400" />
+        <Eclipse className="w-4 h-4 text-zinc-400" />
         Shader / Material
       </h3>
 

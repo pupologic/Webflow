@@ -1254,6 +1254,220 @@ export function useWebGLPaint(
     return finalDataUrl;
   }, [gl, layers]);
 
+  const exportProjectLayersData = useCallback(async () => {
+    return new Promise<any[]>((resolve, reject) => {
+      setTimeout(() => {
+        try {
+          const state = stateRef.current;
+          const width = state.textureSize;
+          const height = state.textureSize;
+          const buffer = new Uint8Array(width * height * 4);
+          
+          const exportTarget = (target: THREE.WebGLRenderTarget) => {
+            const oldRT = gl.getRenderTarget();
+            const oldAutoClear = gl.autoClear;
+            
+            gl.setRenderTarget(target);
+            gl.readRenderTargetPixels(target, 0, 0, width, height, buffer);
+            gl.setRenderTarget(oldRT);
+            gl.autoClear = oldAutoClear;
+
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = width;
+            tempCanvas.height = height;
+            const tempCtx = tempCanvas.getContext('2d');
+            
+            const tempFlipCanvas = document.createElement('canvas');
+            tempFlipCanvas.width = width;
+            tempFlipCanvas.height = height;
+            const tempFlipCtx = tempFlipCanvas.getContext('2d');
+
+            if (!tempCtx || !tempFlipCtx) return undefined;
+
+            const imgData = new ImageData(new Uint8ClampedArray(buffer), width, height);
+            tempCtx.putImageData(imgData, 0, 0);
+
+            tempFlipCtx.clearRect(0, 0, width, height);
+            tempFlipCtx.save();
+            tempFlipCtx.translate(0, height);
+            tempFlipCtx.scale(1, -1);
+            tempFlipCtx.drawImage(tempCanvas, 0, 0);
+            tempFlipCtx.restore();
+
+            return tempFlipCanvas.toDataURL('image/png');
+          };
+
+          const layersData = state.layers.map(l => ({
+            id: l.id,
+            name: l.name,
+            visible: l.visible,
+            opacity: l.opacity,
+            blendMode: l.blendMode,
+            isFolder: !!l.isFolder,
+            parentId: l.parentId,
+            maskEnabled: l.maskEnabled,
+            hasMask: !!l.maskTarget,
+            targetBlobUrl: l.target ? exportTarget(l.target) : undefined,
+            maskBlobUrl: l.maskTarget ? exportTarget(l.maskTarget) : undefined
+          }));
+          
+          resolve(layersData);
+        } catch (error) {
+          reject(error);
+        }
+      }, 10);
+    });
+  }, [gl]);
+
+  const importProjectLayersData = useCallback(async (layersData: any[]) => {
+    const state = stateRef.current;
+    
+    // Cleanup existing layers
+    state.layers.forEach(l => {
+        if(l.target) l.target.dispose();
+        if(l.maskTarget) l.maskTarget.dispose();
+    });
+    
+    const newLayers: GPULayer[] = [];
+    const size = state.textureSize;
+    const oldRT = gl.getRenderTarget();
+
+    for (const lData of layersData) {
+        const targetOpts = {
+          minFilter: THREE.LinearFilter,
+          magFilter: THREE.LinearFilter,
+          format: THREE.RGBAFormat,
+          generateMipmaps: false,
+        };
+        
+        let target: THREE.WebGLRenderTarget | null = null;
+        let maskTarget: THREE.WebGLRenderTarget | null = null;
+        
+        if (!lData.isFolder) {
+            target = new THREE.WebGLRenderTarget(size, size, targetOpts);
+            if (lData.targetBlobUrl) {
+               await new Promise<void>((resolve) => {
+                 const img = new Image();
+                 img.onload = () => {
+                    const tempRT = gl.getRenderTarget();
+                    const oldAutoClear = gl.autoClear;
+                    gl.autoClear = false;
+
+                    gl.setRenderTarget(target);
+                    gl.setClearColor(0x000000, 0);
+                    gl.clear();
+                    
+                    const tex = new THREE.Texture(img);
+                    tex.needsUpdate = true;
+                    tex.minFilter = THREE.LinearFilter;
+                    tex.magFilter = THREE.LinearFilter;
+                    tex.flipY = true; 
+
+                    const mat = new THREE.MeshBasicMaterial({ 
+                      map: tex, 
+                      depthTest: false, 
+                      depthWrite: false, 
+                      transparent: true,
+                      blending: THREE.NoBlending
+                    });
+                     
+                    const oldMat = state.compositeQuad.material;
+                    state.compositeQuad.material = mat;
+                    gl.render(state.compositeScene, state.compositeCamera);
+                    state.compositeQuad.material = oldMat;
+                    
+                    mat.dispose();
+                    tex.dispose();
+
+                    gl.setRenderTarget(tempRT);
+                    gl.autoClear = oldAutoClear;
+                    resolve();
+                 };
+                 img.src = lData.targetBlobUrl;
+               });
+            } else {
+               gl.setRenderTarget(target);
+               gl.setClearColor(0x000000, 0);
+               gl.clear();
+            }
+        }
+        
+        if (lData.hasMask) {
+            maskTarget = new THREE.WebGLRenderTarget(size, size, targetOpts);
+            if (lData.maskBlobUrl) {
+                await new Promise<void>((resolve) => {
+                 const img = new Image();
+                 img.onload = () => {
+                    const tempRT = gl.getRenderTarget();
+                    const oldAutoClear = gl.autoClear;
+                    gl.autoClear = false;
+
+                    gl.setRenderTarget(maskTarget);
+                    gl.setClearColor(0x000000, 0);
+                    gl.clear();
+
+                    const tex = new THREE.Texture(img);
+                    tex.needsUpdate = true;
+                    tex.minFilter = THREE.LinearFilter;
+                    tex.magFilter = THREE.LinearFilter;
+                    tex.flipY = true;
+
+                    const mat = new THREE.MeshBasicMaterial({ 
+                      map: tex, 
+                      depthTest: false, 
+                      depthWrite: false, 
+                      transparent: true,
+                      blending: THREE.NoBlending
+                    });
+                    
+                    const oldMat = state.compositeQuad.material;
+                    state.compositeQuad.material = mat;
+                    gl.render(state.compositeScene, state.compositeCamera);
+                    state.compositeQuad.material = oldMat;
+                    
+                    mat.dispose();
+                    tex.dispose();
+
+                    gl.setRenderTarget(tempRT);
+                    gl.autoClear = oldAutoClear;
+                    resolve();
+                 };
+                 img.src = lData.maskBlobUrl;
+               });
+            } else {
+               gl.setRenderTarget(maskTarget);
+               gl.setClearColor(0x000000, 0);
+               gl.clear();
+            }
+        }
+        
+        newLayers.push({
+            id: lData.id,
+            name: lData.name,
+            visible: lData.visible,
+            opacity: lData.opacity,
+            blendMode: lData.blendMode,
+            isFolder: lData.isFolder,
+            parentId: lData.parentId,
+            maskEnabled: lData.maskEnabled,
+            target,
+            maskTarget,
+            isEditingMask: false
+        });
+    }
+    
+    gl.setRenderTarget(oldRT);
+    
+    if (newLayers.length === 0) {
+        addLayer('Base Layer');
+    } else {
+        setLayers(newLayers);
+        setActiveLayerId(newLayers.find(l => !l.isFolder)?.id || newLayers[0].id);
+        state.layers = newLayers;
+        state.needsComposite = true;
+    }
+  }, [gl, addLayer]);
+
   const sampleColor = useCallback((intersection: THREE.Intersection) => {
     const state = stateRef.current;
     if (!state.dilatedTarget || !intersection.uv) return '#ffffff';
@@ -1300,5 +1514,7 @@ export function useWebGLPaint(
     deleteLayerMask,
     toggleLayerMask,
     setEditingMask,
+    exportProjectLayersData,
+    importProjectLayersData,
   };
 }

@@ -1,5 +1,4 @@
-import React from 'react';
-import { Brush, Box, Boxes, Image as ImageIcon, Save, Columns2, Home, PaintBucket, Sun, Sparkles, Layers } from 'lucide-react';
+import { Brush, Box, Boxes, Image as ImageIcon, Save, Columns2, Home, PaintBucket, Sun, Sparkles, Layers, Eclipse } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { MeshSelector } from '@/components/ui-custom/MeshSelector';
 import { TransformPanel } from '@/components/ui-custom/TransformPanel';
@@ -96,7 +95,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
           </div>
           <div className="hidden sm:flex items-baseline gap-2">
             <h1 className="text-xs font-semibold text-zinc-100 tracking-wide">3D PAINTER</h1>
-            <span className="text-[10px] text-zinc-500 font-medium">v1.4.0</span>
+            <span className="text-[10px] text-zinc-500 font-medium">v1.4.1</span>
           </div>
         </div>
 
@@ -212,7 +211,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
 
         <Popover>
           <PopoverTrigger className="text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors p-2 rounded-md">
-            <Boxes className="w-5 h-5" />
+            <Eclipse className="w-5 h-5" />
           </PopoverTrigger>
           <PopoverContent className="w-96 bg-[#121214] border-white/10 p-5 mt-2 shadow-2xl">
             <MaterialPanel

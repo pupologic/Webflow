@@ -74,7 +74,8 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
     initPaintSystem, startPainting, paint, stopPainting,
     texture, previewCanvas,
     layers, activeLayerId, addLayer, addFolder, removeLayer, updateLayer, setLayerActive, moveLayer, reorderLayer, clearCanvas, fillCanvas, undo, redo, exportTexture, sampleColor,
-    createLayerMask, deleteLayerMask, toggleLayerMask, setEditingMask
+    createLayerMask, deleteLayerMask, toggleLayerMask, setEditingMask,
+    exportProjectLayersData, importProjectLayersData
   } = useWebGLPaint(
     groupRef,
     brushSettings,
@@ -85,9 +86,14 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
 
   useEffect(() => {
     if (onLayerControlsReady) {
-      onLayerControlsReady({ layers, activeLayerId, addLayer, addFolder, removeLayer, updateLayer, setLayerActive, moveLayer, reorderLayer, clearCanvas, fillCanvas, undo, redo, exportTexture, createLayerMask, deleteLayerMask, toggleLayerMask, setEditingMask });
+      onLayerControlsReady({ 
+        layers, activeLayerId, addLayer, addFolder, removeLayer, updateLayer, setLayerActive, moveLayer, reorderLayer, 
+        clearCanvas, fillCanvas, undo, redo, exportTexture, 
+        createLayerMask, deleteLayerMask, toggleLayerMask, setEditingMask,
+        exportProjectLayersData, importProjectLayersData
+      });
     }
-  }, [layers, activeLayerId, addLayer, addFolder, removeLayer, updateLayer, setLayerActive, moveLayer, reorderLayer, clearCanvas, fillCanvas, undo, redo, exportTexture, onLayerControlsReady, createLayerMask, deleteLayerMask, toggleLayerMask, setEditingMask]);
+  }, [layers, activeLayerId, addLayer, addFolder, removeLayer, updateLayer, setLayerActive, moveLayer, reorderLayer, clearCanvas, fillCanvas, undo, redo, exportTexture, onLayerControlsReady, createLayerMask, deleteLayerMask, toggleLayerMask, setEditingMask, exportProjectLayersData, importProjectLayersData]);
 
   // Initialize texture on mount and when resolution changes
   useEffect(() => {
