@@ -1,4 +1,4 @@
-import { Box, Boxes, Image as ImageIcon, Save, Columns2, Home, PaintBucket, Sun, Sparkles, Layers, Eclipse, Brush } from 'lucide-react';
+import { Box, Boxes, Image as ImageIcon, Save, Columns2, Home, PaintBucket, Sun, Sparkles, Layers, Eclipse, Brush, Settings } from 'lucide-react';
 import logoImg from '@/logo/logo.png';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { MeshSelector } from '@/components/ui-custom/MeshSelector';
@@ -10,7 +10,9 @@ import { MaterialPanel } from '@/components/ui-custom/MaterialPanel';
 import { EssentialsPanel } from '@/components/ui-custom/EssentialsPanel';
 import { LayersPanel } from '@/components/ui-custom/LayersPanel';
 import { ColorPicker } from '@/components/ui-custom/ColorPicker';
+import { Slider } from '@/components/ui/slider';
 import type { BrushSettings } from '@/hooks/useWebGLPaint';
+import type { PerformanceConfig } from '@/App';
 
 export interface TopHeaderProps {
   setIsDashboard: (v: boolean) => void;
@@ -64,6 +66,8 @@ export interface TopHeaderProps {
   setMetalness: (v: number) => void;
   colorHistory: string[];
   layerControls: any;
+  performanceConfig: PerformanceConfig;
+  setPerformanceConfig: (v: PerformanceConfig) => void;
 }
 
 export const TopHeader: React.FC<TopHeaderProps> = ({
@@ -76,7 +80,8 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   matcapName, setMatcapName, lightSetup, setLightSetup, lightIntensity, setLightIntensity,
   showGrid, setShowGrid, focalLength, setFocalLength, envIntensity, setEnvIntensity,
   objectColor, setObjectColor, roughness, setRoughness, metalness, setMetalness,
-  colorHistory, layerControls
+  colorHistory, layerControls,
+  performanceConfig, setPerformanceConfig
 }) => {
   return (
     <header className="bg-[#121214] border-b border-white/5 px-4 py-3 flex items-center justify-between z-10 shadow-md">
@@ -247,6 +252,47 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
           </PopoverTrigger>
           <PopoverContent className="w-80 bg-[#121214] border-white/10 p-5 mt-2">
             <LayersPanel layerControls={layerControls} />
+          </PopoverContent>
+        </Popover>
+
+        <Popover>
+          <PopoverTrigger className="text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors p-2 rounded-md">
+            <Settings className="w-5 h-5" />
+          </PopoverTrigger>
+          <PopoverContent className="w-80 bg-[#121214] border-white/10 p-5 mt-2 shadow-2xl">
+            <div className="flex flex-col gap-6">
+              <h3 className="text-sm font-bold text-zinc-400 uppercase tracking-widest">Configurações de Performance</h3>
+              
+              <div className="flex flex-col gap-4">
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-zinc-300 font-medium">Raycast Throttling</span>
+                  <span className="text-blue-400 font-mono">Pular {performanceConfig.raycastThrottle - 1} frames</span>
+                </div>
+                <Slider 
+                  value={[performanceConfig.raycastThrottle]} 
+                  onValueChange={([val]) => setPerformanceConfig({ ...performanceConfig, raycastThrottle: val })}
+                  min={1}
+                  max={5}
+                  step={1}
+                />
+                <p className="text-[10px] text-zinc-500 italic">Reduz a precisão do cursor em favor de FPS em dispositivos lentos.</p>
+              </div>
+
+              <div className="flex flex-col gap-4">
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-zinc-300 font-medium">Raio de Dilatação (Padding)</span>
+                  <span className="text-blue-400 font-mono">{performanceConfig.dilationRadius}px</span>
+                </div>
+                <Slider 
+                  value={[performanceConfig.dilationRadius]} 
+                  onValueChange={([val]) => setPerformanceConfig({ ...performanceConfig, dilationRadius: val })}
+                  min={2}
+                  max={16}
+                  step={2}
+                />
+                <p className="text-[10px] text-zinc-500 italic">Controla o preenchimento entre as ilhas da UV para evitar falhas visuais.</p>
+              </div>
+            </div>
           </PopoverContent>
         </Popover>
 

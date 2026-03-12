@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { useWebGLPaint } from '@/hooks/useWebGLPaint';
 import type { BrushSettings } from '@/hooks/useWebGLPaint';
 import type { OverlayData } from '@/components/ui-custom/OverlayManager';
+import type { PerformanceConfig } from '@/App';
 
 import grayClay from '@/matcap/gray_clay_010001.png';
 import lightGrey from '@/matcap/light_grey_010001.png';
@@ -43,6 +44,9 @@ interface PaintableMeshProps {
   onBrushSettingsChange?: (settings: BrushSettings) => void;
   activeStencil?: OverlayData;
   onColorPainted?: (color: string) => void;
+  onLoadingProgress?: (progress: number, status: string) => void;
+  isVisible?: boolean;
+  performanceConfig?: PerformanceConfig;
 }
 
 export const PaintableMesh: React.FC<PaintableMeshProps> = ({
@@ -61,7 +65,10 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
   onLayerControlsReady,
   onBrushSettingsChange,
   activeStencil,
-  onColorPainted
+  onColorPainted,
+  onLoadingProgress,
+  isVisible = true,
+  performanceConfig
 }) => {
   const groupRef = useRef<THREE.Group>(null);
   const { camera, gl, size } = useThree();
@@ -69,6 +76,7 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
   const [cursor, setCursor] = useState<{ point: THREE.Vector3; normal: THREE.Vector3; radius: number, lazyPoint?: THREE.Vector3 } | null>(null);
   const isOrbitingRef = useRef(false);
   const isPickingRef = useRef(false);
+  const frameCountRef = useRef(0);
   
   const { 
     initPaintSystem, startPainting, paint, stopPainting,
@@ -81,8 +89,19 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
     brushSettings,
     [modelParts],
     activeStencil,
-    onColorPainted
+    onColorPainted,
+    performanceConfig
   );
+
+  const [loadingProgress, setLoadingProgress] = useState({ matcap: 0, layers: 0 });
+
+  useEffect(() => {
+    const total = (loadingProgress.matcap + loadingProgress.layers) / 2;
+    if (onLoadingProgress) {
+      const status = loadingProgress.layers < 100 ? 'Carregando camadas...' : 'Finalizando materiais...';
+      onLoadingProgress(total, status);
+    }
+  }, [loadingProgress, onLoadingProgress]);
 
   useEffect(() => {
     if (onLayerControlsReady) {
@@ -90,7 +109,13 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
         layers, activeLayerId, addLayer, addFolder, removeLayer, updateLayer, setLayerActive, moveLayer, reorderLayer, 
         clearCanvas, fillCanvas, undo, redo, exportTexture, 
         createLayerMask, deleteLayerMask, toggleLayerMask, setEditingMask,
-        exportProjectLayersData, importProjectLayersData
+        exportProjectLayersData, 
+        importProjectLayersData: (data: any[]) => {
+          setLoadingProgress(p => ({ ...p, layers: 0 }));
+          return importProjectLayersData(data, (prog) => {
+            setLoadingProgress(p => ({ ...p, layers: prog }));
+          });
+        }
       });
     }
   }, [layers, activeLayerId, addLayer, addFolder, removeLayer, updateLayer, setLayerActive, moveLayer, reorderLayer, clearCanvas, fillCanvas, undo, redo, exportTexture, onLayerControlsReady, createLayerMask, deleteLayerMask, toggleLayerMask, setEditingMask, exportProjectLayersData, importProjectLayersData]);
@@ -98,6 +123,7 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
   // Initialize texture on mount and when resolution changes
   useEffect(() => {
     initPaintSystem(textureResolution);
+    setLoadingProgress(p => ({ ...p, layers: 100 })); // New project case
   }, [initPaintSystem, textureResolution]);
 
   useEffect(() => {
@@ -110,13 +136,23 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
 
   useEffect(() => {
     if (matcapName && MATCAPS_URLS[matcapName]) {
+      setLoadingProgress(p => ({ ...p, matcap: 0 }));
       const loader = new THREE.TextureLoader();
-      loader.load(MATCAPS_URLS[matcapName], (texture) => {
-        texture.colorSpace = THREE.SRGBColorSpace;
-        setMatcapTexture(texture);
-      });
+      loader.load(
+        MATCAPS_URLS[matcapName], 
+        (texture) => {
+          texture.colorSpace = THREE.SRGBColorSpace;
+          setMatcapTexture(texture);
+          setLoadingProgress(p => ({ ...p, matcap: 100 }));
+        },
+        undefined,
+        () => {
+          setLoadingProgress(p => ({ ...p, matcap: 100 }));
+        }
+      );
     } else {
       setMatcapTexture(null);
+      setLoadingProgress(p => ({ ...p, matcap: 100 }));
     }
   }, [matcapName]);
 
@@ -252,12 +288,19 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
       let pressure = nativeEvent.pointerType === 'pen' ? nativeEvent.pressure : 1.0;
       if (pressure === 0 && nativeEvent.pointerType !== 'pen') pressure = 1.0;
       
+      // Raycast Throttling
+      frameCountRef.current++;
+      const throttle = performanceConfig?.raycastThrottle || 1;
+      if (throttle > 1 && frameCountRef.current % throttle !== 0) {
+        return;
+      }
+
       latestInteraction.current = { hit, pressure };
       if (pointerRafRef.current === 0) {
         pointerRafRef.current = requestAnimationFrame(processPointerEvent);
       }
     },
-    [processPointerEvent]
+    [processPointerEvent, performanceConfig]
   );
 
   const handlePointerUp = useCallback(
@@ -302,7 +345,12 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
 
   return (
     <>
-      <group position={modelTransform?.position} rotation={modelTransform?.rotation} scale={modelTransform?.scale}>
+      <group 
+        position={modelTransform?.position} 
+        rotation={modelTransform?.rotation} 
+        scale={modelTransform?.scale}
+        visible={isVisible}
+      >
         {/* Main paintable group containing all visible submeshes */}
         <group ref={groupRef}>
         {modelParts.length > 0 ? (
@@ -367,7 +415,7 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
 
       </group>
 
-      {cursor && (
+      {cursor && isVisible && (
         <group>
           {/* Main Cursor */}
           <mesh 
@@ -479,3 +527,5 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
     </>
   );
 };
+
+export default PaintableMesh;

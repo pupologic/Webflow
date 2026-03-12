@@ -13,6 +13,7 @@ import { ProjectManager } from '@/services/ProjectManager';
 import type { SavedProject } from '@/services/ProjectManager';
 import { TopHeader } from '@/components/ui-custom/TopHeader';
 import { LeftShortcutBar } from '@/components/ui-custom/LeftShortcutBar';
+import { LoadingOverlay } from '@/components/ui-custom/LoadingOverlay';
 import './App.css';
 
 export interface ModelPart {
@@ -20,6 +21,11 @@ export interface ModelPart {
   name: string;
   geometry: THREE.BufferGeometry;
   visible: boolean;
+}
+
+export interface PerformanceConfig {
+  raycastThrottle: number; // 1 = every frame, 2 = every 2 frames, etc.
+  dilationRadius: number; // 2 to 16
 }
 
 function App() {
@@ -48,6 +54,8 @@ function App() {
   // Project Management State
   const [isDashboard, setIsDashboard] = useState(true);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadingProgress, setLoadingProgress] = useState(0);
 
   const [modelTransform, setModelTransform] = useState({
     position: [0, 0, 0] as [number, number, number],
@@ -92,6 +100,11 @@ function App() {
   const [objectColor, setObjectColor] = useState('#e5e5e5');
   const [roughness, setRoughness] = useState(0.8);
   const [metalness, setMetalness] = useState(0.1);
+
+  const [performanceConfig, setPerformanceConfig] = useState<PerformanceConfig>({
+    raycastThrottle: 1,
+    dilationRadius: 16,
+  });
 
   const handleAddOverlay = useCallback((type: 'reference' | 'stencil', file: File) => {
     const url = URL.createObjectURL(file);
@@ -249,6 +262,8 @@ function App() {
   }, []);
 
   const handleObjUpload = useCallback((file: File) => {
+    setIsLoading(true);
+    setLoadingProgress(0);
     const reader = new FileReader();
     reader.onload = (e) => {
       const contents = e.target?.result as string;
@@ -311,6 +326,8 @@ function App() {
   };
 
   const handleNewProject = (type: 'Suzanne' | 'Cube', file?: File) => {
+    setIsLoading(true);
+    setLoadingProgress(0);
     if (file) {
       handleObjUpload(file);
     } else {
@@ -321,6 +338,8 @@ function App() {
   };
 
   const handleLoadProject = (project: SavedProject) => {
+    setIsLoading(true);
+    setLoadingProgress(0);
     setModelName(project.modelName);
     setBrushSettings(project.brushSettings);
     setCurrentProjectId(project.id);
@@ -329,14 +348,16 @@ function App() {
     toast.success('Projeto carregado!');
   };
 
-  if (isDashboard) {
-    return <Dashboard onNewProject={handleNewProject} onLoadProject={handleLoadProject} />;
-  }
-
   return (
     <div className="h-screen bg-[#09090b] text-zinc-100 flex flex-col font-sans">
+      <LoadingOverlay show={isLoading} progress={loadingProgress} />
       <Toaster position="top-right" theme="dark" />
-         <TopHeader
+      
+      {isDashboard ? (
+        <Dashboard onNewProject={handleNewProject} onLoadProject={handleLoadProject} />
+      ) : (
+        <>
+          <TopHeader
         setIsDashboard={setIsDashboard}
         modelName={modelName}
         setModelName={setModelName}
@@ -382,6 +403,8 @@ function App() {
         setMetalness={setMetalness}
         colorHistory={colorHistory}
         layerControls={layerControls}
+        performanceConfig={performanceConfig}
+        setPerformanceConfig={setPerformanceConfig}
       />
 
       <div className="flex-1 flex overflow-hidden bg-[#09090b]">
@@ -435,6 +458,14 @@ function App() {
                 onLayerControlsReady={handleLayerControlsReady}
                 onColorPainted={handleColorPainted}
                 activeStencil={overlays.find(o => o.type === 'stencil' && o.visible)}
+                performanceConfig={performanceConfig}
+                onLoadingProgress={(prog) => {
+                  setLoadingProgress(prog);
+                  if (prog >= 100) {
+                    setTimeout(() => setIsLoading(false), 800);
+                  }
+                }}
+                isModelVisible={!isLoading}
               />
             </div>
 
@@ -481,9 +512,11 @@ function App() {
             >
               <UVOverlayPanel texture={currentTexture} previewCanvas={previewCanvas} geometry={modelParts[0]?.geometry || null} />
             </div>
-          </div>
-        </main>
-      </div>
+            </div>
+          </main>
+        </div>
+        </>
+      )}
     </div>
   );
 }

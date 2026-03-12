@@ -1,5 +1,5 @@
 import React from 'react';
-import { Brush, Eraser, Undo2, Redo2, ArrowRightLeft } from 'lucide-react';
+import { Brush, Eraser, Undo2, Redo2, ArrowRightLeft, Layers } from 'lucide-react';
 import { Slider } from '@/components/ui/slider';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ColorPicker } from '@/components/ui-custom/ColorPicker';
@@ -102,7 +102,7 @@ export const LeftShortcutBar: React.FC<LeftShortcutBarProps> = ({
             title="Layer"
           >
             <div className="w-full h-full bg-zinc-700 flex items-center justify-center">
-              <div className="w-4 h-4 rounded-[3px] border border-white/30" />
+              <Layers className="w-4 h-4 text-white/70" />
             </div>
           </div>
         </div>

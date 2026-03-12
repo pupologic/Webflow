@@ -5,6 +5,7 @@ import { BrushShaderMaterial } from '../components/3d/materials/BrushShaderMater
 import { DilationShaderMaterial } from '../components/3d/materials/DilationShaderMaterial';
 import { CompositeShaderMaterial } from '../components/3d/materials/CompositeShaderMaterial';
 import type { OverlayData } from '../components/ui-custom/OverlayManager';
+import type { PerformanceConfig } from '../App';
 
 export interface BrushSettings {
   color: string;
@@ -48,7 +49,8 @@ export function useWebGLPaint(
   brushSettings: BrushSettings,
   updateDependencies: any[] = [],
   activeStencil?: OverlayData,
-  onColorPainted?: (color: string) => void
+  onColorPainted?: (color: string) => void,
+  performanceConfig?: PerformanceConfig
 ) {
   const { gl, camera, size: canvasSize } = useThree();
   const onColorPaintedRef = useRef(onColorPainted);
@@ -751,7 +753,8 @@ export function useWebGLPaint(
       
       // Use low radius during painting, full radius during idle or stagger step 1
       const isFinalizing = state.staggerStep === 1;
-      const currentRadius = (state.isPainting) ? 2.0 : 16.0;
+      const maxRadius = performanceConfig?.dilationRadius || 16.0;
+      const currentRadius = (state.isPainting) ? Math.min(2.0, maxRadius) : maxRadius;
       
       state.dilationMaterial.setMap(state.compositeTarget.texture, state.uvMaskTarget.texture, state.textureSize, state.textureSize, currentRadius);
       state.compositeQuad.material = state.dilationMaterial;
@@ -764,7 +767,7 @@ export function useWebGLPaint(
     state.needsComposite = false;
     
     // We handle SyncPreview separately in the loop for staggering
-  }, [gl, groupRef, layers]);
+  }, [gl, groupRef, layers, performanceConfig]);
 
   useEffect(() => {
     let animId: number;
@@ -1319,7 +1322,7 @@ export function useWebGLPaint(
     });
   }, [gl]);
 
-  const importProjectLayersData = useCallback(async (layersData: any[]) => {
+  const importProjectLayersData = useCallback(async (layersData: any[], onProgress?: (progress: number) => void) => {
     const state = stateRef.current;
     
     // Cleanup existing layers
@@ -1331,6 +1334,15 @@ export function useWebGLPaint(
     const newLayers: GPULayer[] = [];
     const size = state.textureSize;
     const oldRT = gl.getRenderTarget();
+
+    const totalSteps = layersData.length * 2; // target and mask for each layer
+    let completedSteps = 0;
+
+    const reportProgress = () => {
+      if (onProgress) {
+        onProgress((completedSteps / totalSteps) * 100);
+      }
+    };
 
     for (const lData of layersData) {
         const targetOpts = {
@@ -1353,7 +1365,7 @@ export function useWebGLPaint(
                     const oldAutoClear = gl.autoClear;
                     gl.autoClear = false;
 
-                    gl.setRenderTarget(target);
+                    gl.setRenderTarget(target!);
                     gl.setClearColor(0x000000, 0);
                     gl.clear();
                     
@@ -1381,6 +1393,8 @@ export function useWebGLPaint(
 
                     gl.setRenderTarget(tempRT);
                     gl.autoClear = oldAutoClear;
+                    completedSteps++;
+                    reportProgress();
                     resolve();
                  };
                  img.src = lData.targetBlobUrl;
@@ -1389,7 +1403,12 @@ export function useWebGLPaint(
                gl.setRenderTarget(target);
                gl.setClearColor(0x000000, 0);
                gl.clear();
+               completedSteps++;
+               reportProgress();
             }
+        } else {
+          completedSteps++; // Folders count as one step too for simplicity
+          reportProgress();
         }
         
         if (lData.hasMask) {
@@ -1402,7 +1421,7 @@ export function useWebGLPaint(
                     const oldAutoClear = gl.autoClear;
                     gl.autoClear = false;
 
-                    gl.setRenderTarget(maskTarget);
+                    gl.setRenderTarget(maskTarget!);
                     gl.setClearColor(0x000000, 0);
                     gl.clear();
 
@@ -1430,6 +1449,8 @@ export function useWebGLPaint(
 
                     gl.setRenderTarget(tempRT);
                     gl.autoClear = oldAutoClear;
+                    completedSteps++;
+                    reportProgress();
                     resolve();
                  };
                  img.src = lData.maskBlobUrl;
@@ -1438,7 +1459,12 @@ export function useWebGLPaint(
                gl.setRenderTarget(maskTarget);
                gl.setClearColor(0x000000, 0);
                gl.clear();
+               completedSteps++;
+               reportProgress();
             }
+        } else {
+          completedSteps++;
+          reportProgress();
         }
         
         newLayers.push({

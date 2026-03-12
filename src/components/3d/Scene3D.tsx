@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { PaintableMesh } from './PaintableMesh';
 import type { BrushSettings } from '@/hooks/useWebGLPaint';
 import type { OverlayData } from '@/components/ui-custom/OverlayManager';
+import type { PerformanceConfig } from '@/App';
 
 interface Scene3DProps {
   brushSettings: BrushSettings;
@@ -32,6 +33,9 @@ interface Scene3DProps {
   onLayerControlsReady?: (controls: any) => void;
   activeStencil?: OverlayData;
   onColorPainted?: (color: string) => void;
+  onLoadingProgress?: (progress: number, status: string) => void;
+  isModelVisible?: boolean;
+  performanceConfig?: PerformanceConfig;
 }
 
 const CameraController = ({ focalLength }: { focalLength: number }) => {
@@ -82,7 +86,10 @@ export const Scene3D: React.FC<Scene3DProps> = ({
   onTextureChange,
   onLayerControlsReady,
   activeStencil,
-  onColorPainted
+  onColorPainted,
+  onLoadingProgress,
+  isModelVisible = true,
+  performanceConfig
 }) => {
   const [cameraPosition] = useState<[number, number, number]>([0, 0, 8]);
   const controlsRef = useRef<any>(null);
@@ -164,6 +171,9 @@ export const Scene3D: React.FC<Scene3DProps> = ({
           onLayerControlsReady={onLayerControlsReady}
           activeStencil={activeStencil}
           onColorPainted={onColorPainted}
+          onLoadingProgress={onLoadingProgress}
+          isVisible={isModelVisible}
+          performanceConfig={performanceConfig}
         />
 
         {/* Lights (all grouped so rotation applies consistently to the lighting setup) */}
