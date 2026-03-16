@@ -144,7 +144,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
           </div>
           <div className="hidden md:flex items-baseline gap-1.5 md:gap-2">
             <h1 className="text-[10px] md:text-xs font-semibold text-zinc-100 tracking-wide uppercase">Webflow</h1>
-            <span className="text-[8px] md:text-[10px] text-zinc-500 font-medium hidden xl:inline">v1.7.0</span>
+            <span className="text-[8px] md:text-[10px] text-zinc-500 font-medium whitespace-nowrap">v1.7.0</span>
           </div>
         </div>
 
