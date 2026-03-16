@@ -2387,6 +2387,7 @@ export function useWebGLPaint(
     startGradientPreview,
     previewGradient,
     markChannelDirty,
+    lazyPoint: stateRef.current.lazyPoint,
   }), [
     initPaintSystem,
     startPainting,

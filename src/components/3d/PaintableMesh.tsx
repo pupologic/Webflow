@@ -98,7 +98,8 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
     createLayerMask, deleteLayerMask, toggleLayerMask, setEditingMask,
     mergeLayer, mergeFolder,
     renderGradient, startGradientPreview, previewGradient,
-    exportProjectLayersData, importProjectLayersData
+    exportProjectLayersData, importProjectLayersData,
+    lazyPoint
   } = useWebGLPaint(
     groupRef,
     brushSettings,
@@ -238,7 +239,7 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
         point: hit.point, 
         normal, 
         radius,
-        lazyPoint: brushSettings.lazyMouse ? (useWebGLPaint as any).lazyPoint?.clone() : undefined
+        lazyPoint: brushSettings.lazyMouse ? lazyPoint.clone() : undefined
       });
     } else {
       setCursor(null);
@@ -353,10 +354,14 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
       }
 
       let pressure = nativeEvent.pointerType === 'pen' ? nativeEvent.pressure : 1.0;
-      if (pressure === 0 && nativeEvent.pointerType === 'pen') pressure = 0.5;
-      if (pressure === 0 && nativeEvent.pointerType !== 'pen') pressure = 1.0;
+      // Stylus fix: some tablets report 0 on first touchdown or during hover
+      if (nativeEvent.pointerType === 'pen' && pressure === 0) pressure = 0.5;
+      if (nativeEvent.pointerType !== 'pen' && pressure === 0) pressure = 1.0;
 
       if (brushSettings.mode as any === 'gradient') return;
+      
+      // Update cursor even if not painting for stylus/mouse preview
+      updateCursor(hit, pressure);
 
       latestInteraction.current = { hit, pressure };
       if (pointerRafRef.current === 0) {
@@ -554,7 +559,7 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
             <ringGeometry args={[cursor.radius * 0.95, cursor.radius, 32]} />
             <meshBasicMaterial 
               color={brushSettings.color} 
-              opacity={0.4} 
+              opacity={0.6} 
               transparent 
               depthTest={false} 
               depthWrite={false} 
