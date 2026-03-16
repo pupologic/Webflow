@@ -13,6 +13,13 @@ export const EssentialsPanel: React.FC<EssentialsPanelProps> = ({
   brushSettings,
   onBrushSettingsChange,
 }) => {
+  // Temporary fix: Reset symmetry if it was set to radial while we have it locked
+  React.useEffect(() => {
+    if (brushSettings.symmetryMode === 'radial') {
+      onBrushSettingsChange({ ...brushSettings, symmetryMode: 'none' });
+    }
+  }, [brushSettings.symmetryMode, onBrushSettingsChange, brushSettings]);
+
   return (
     <div className="space-y-6">
       <div className="space-y-4">
@@ -47,19 +54,26 @@ export const EssentialsPanel: React.FC<EssentialsPanelProps> = ({
         <h3 className="text-zinc-100 font-semibold text-sm tracking-wide uppercase">Simetria</h3>
         
         <div className="grid grid-cols-3 gap-2">
-          {(['none', 'mirror', 'radial'] as const).map((mode) => (
-            <button
-              key={mode}
-              onClick={() => onBrushSettingsChange({ ...brushSettings, symmetryMode: mode })}
-              className={`py-2 text-[10px] rounded border transition-all ${
-                brushSettings.symmetryMode === mode 
-                ? 'bg-zinc-800 border-white text-white' 
-                : 'bg-zinc-900 border-white/5 text-zinc-500 hover:border-white/20'
-              }`}
-            >
-              {mode.toUpperCase()}
-            </button>
-          ))}
+          {(['none', 'mirror', 'radial'] as const).map((mode) => {
+            const isDisabled = mode === 'radial';
+            return (
+              <button
+                key={mode}
+                disabled={isDisabled}
+                onClick={() => !isDisabled && onBrushSettingsChange({ ...brushSettings, symmetryMode: mode })}
+                className={`py-2 text-[10px] rounded border transition-all ${
+                  brushSettings.symmetryMode === mode 
+                  ? 'bg-zinc-800 border-white text-white' 
+                  : isDisabled
+                  ? 'bg-zinc-950 border-white/5 text-zinc-700 cursor-not-allowed grayscale'
+                  : 'bg-zinc-900 border-white/5 text-zinc-500 hover:border-white/20'
+                }`}
+              >
+                {mode.toUpperCase()}
+                {isDisabled && <span className="block text-[8px] opacity-50">(Lock)</span>}
+              </button>
+            );
+          })}
         </div>
 
         {brushSettings.symmetryMode !== 'none' && (
