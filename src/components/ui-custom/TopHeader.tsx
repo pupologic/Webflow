@@ -142,9 +142,9 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
           <div className="bg-white/5 p-1 rounded-lg border border-white/10 w-7 h-7 md:w-9 h-9 flex items-center justify-center overflow-hidden">
             <img src={logoImg} alt="Logo" className="w-full h-full object-contain" />
           </div>
-          <div className="hidden md:flex items-baseline gap-1.5 md:gap-2">
-            <h1 className="text-[10px] md:text-xs font-semibold text-zinc-100 tracking-wide uppercase">Webflow</h1>
-            <span className="text-[8px] md:text-[10px] text-zinc-500 font-medium whitespace-nowrap">v1.7.0</span>
+          <div className="flex flex-col items-end">
+            <h1 className="text-[10px] md:text-xs font-semibold text-zinc-100 tracking-wide uppercase leading-none">Webflow</h1>
+            <span className="text-[7px] md:text-[9px] text-zinc-500 font-medium whitespace-nowrap leading-none mt-0.5">v1.7.2</span>
           </div>
         </div>
 
