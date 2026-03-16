@@ -151,6 +151,7 @@ export function useWebGLPaint(
     hasSnapshot: false,
     lastFollowAngle: 0,
     strokeBBox: { minX: 1, minY: 1, maxX: 0, maxY: 0 },
+    frameStrokeBBox: { minX: 1, minY: 1, maxX: 0, maxY: 0 },
     strokeProxyTarget: null as THREE.WebGLRenderTarget | null,
     isUsingProxy: false,
     strokePoints: [] as StrokePoint[],
@@ -756,10 +757,9 @@ export function useWebGLPaint(
     }
 
     state.lastHitPoint.copy(intersection.point);
-    state.lastPressure = pressure;
-
     const uv = intersection.uv?.clone() || new THREE.Vector2();
     state.strokeBBox = { minX: uv.x, minY: uv.y, maxX: uv.x, maxY: uv.y };
+    state.frameStrokeBBox = { minX: uv.x, minY: uv.y, maxX: uv.x, maxY: uv.y };
     state.strokePoints = [];
 
     saveUndoState();
@@ -864,11 +864,17 @@ export function useWebGLPaint(
 
     const targetUV = intersection.uv?.clone() || new THREE.Vector2();
 
-    // Update stroke bounding box
+    // Update stroke bounding box (cumulative for the whole stroke)
     state.strokeBBox.minX = Math.min(state.strokeBBox.minX, targetUV.x);
     state.strokeBBox.maxX = Math.max(state.strokeBBox.maxX, targetUV.x);
     state.strokeBBox.minY = Math.min(state.strokeBBox.minY, targetUV.y);
     state.strokeBBox.maxY = Math.max(state.strokeBBox.maxY, targetUV.y);
+
+    // Update frame bounding box (for incremental scissor optimization)
+    state.frameStrokeBBox.minX = Math.min(state.frameStrokeBBox.minX, targetUV.x);
+    state.frameStrokeBBox.maxX = Math.max(state.frameStrokeBBox.maxX, targetUV.x);
+    state.frameStrokeBBox.minY = Math.min(state.frameStrokeBBox.minY, targetUV.y);
+    state.frameStrokeBBox.maxY = Math.max(state.frameStrokeBBox.maxY, targetUV.y);
 
     let currentPoint = intersection.point;
 
@@ -1109,16 +1115,19 @@ export function useWebGLPaint(
     }
 
     // --- Scissor Testing Optimization ---
-    const useScissor = state.isPainting && state.strokeBBox.maxX >= state.strokeBBox.minX;
+    const useScissor = state.strokeBBox.maxX >= state.strokeBBox.minX;
     if (useScissor) {
-      const margin = 32; // Margin for dilation (16px) + safety
+      // Use cumulative bbox for full refresh frames, or frame-specific for active painting
+      const bbox = state.isPainting ? state.frameStrokeBBox : state.strokeBBox;
+      
+      const margin = state.isPainting ? 8 : 32; // Smaller margin during interaction
       const uvMargin = margin / state.textureSize;
-      const x = Math.floor(Math.max(0, state.strokeBBox.minX - uvMargin) * state.textureSize);
-      const y = Math.floor(Math.max(0, state.strokeBBox.minY - uvMargin) * state.textureSize);
-      const w = Math.ceil(Math.min(1, state.strokeBBox.maxX + uvMargin) * state.textureSize) - x;
-      const h = Math.ceil(Math.min(1, state.strokeBBox.maxY + uvMargin) * state.textureSize) - y;
+      const x = Math.floor(Math.max(0, bbox.minX - uvMargin) * state.textureSize);
+      const y = Math.floor(Math.max(0, bbox.minY - uvMargin) * state.textureSize);
+      const w = Math.ceil(Math.min(1, bbox.maxX + uvMargin) * state.textureSize) - x;
+      const h = Math.ceil(Math.min(1, bbox.maxY + uvMargin) * state.textureSize) - y;
       gl.setScissorTest(true);
-      gl.setScissor(x, y, w, h);
+      gl.setScissor(x, y, Math.max(1, w), Math.max(1, h));
     }
 
     // --- Channel-based Compositing ---
@@ -1199,12 +1208,20 @@ export function useWebGLPaint(
       if (state.uvMaskTarget) {
           gl.setRenderTarget(targetRT);
           
-          // Optimization: Standardized 16px radius. Scissor test handles the performance.
-          const currentRadius = 16.0;
-
-          state.dilationMaterial.setMap(currentSrc.texture, (state.uvMaskTarget as THREE.WebGLRenderTarget).texture, state.textureSize, state.textureSize, currentRadius);
-          state.compositeQuad.material = state.dilationMaterial;
-          gl.render(state.compositeScene, state.compositeCamera);
+          if (state.isPainting) {
+            // SKIP HEAVY DILATION DURING ACTIVE STROKE
+            // Just blit the composite result directly for speed
+            const blitMat = new THREE.MeshBasicMaterial({ map: currentSrc.texture, transparent: true, blending: THREE.NoBlending });
+            state.compositeQuad.material = blitMat;
+            gl.render(state.compositeScene, state.compositeCamera);
+            blitMat.dispose();
+          } else {
+            // Run high-quality 16px dilation ONLY on idle frames (staggerStep/stopPainting)
+            const currentRadius = 16.0;
+            state.dilationMaterial.setMap(currentSrc.texture, (state.uvMaskTarget as THREE.WebGLRenderTarget).texture, state.textureSize, state.textureSize, currentRadius);
+            state.compositeQuad.material = state.dilationMaterial;
+            gl.render(state.compositeScene, state.compositeCamera);
+          }
       } else {
           // Blit directly if no UV mask
           gl.setRenderTarget(targetRT);
@@ -1223,6 +1240,8 @@ export function useWebGLPaint(
     gl.setClearColor(oldClearColor, oldClearAlpha);
     gl.setRenderTarget(oldRT);
     state.needsComposite = false;
+    // Reset frame-specific bbox for the next animation frame
+    state.frameStrokeBBox = { minX: 1, minY: 1, maxX: 0, maxY: 0 };
     if (state.staggerStep === 1) state.staggerStep = 2;
   }, [gl, isLayerVisuallyVisible, syncPreviewCanvas, activeLayerId]);
 
