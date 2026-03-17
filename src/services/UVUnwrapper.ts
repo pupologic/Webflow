@@ -15,14 +15,40 @@ export class UVUnwrapper {
       const wasmPath = `${baseUrl}/xatlas/xatlas.wasm`;
       const jsPath = `${baseUrl}/xatlas/xatlas.js`;
 
-      await unwrapper.loadLibrary(
-        (mode: string, progress: number) => {
-          if (onProgress) onProgress(mode, progress);
-          else console.log(`xatlas [${mode}]: ${Math.round(progress * 100)}%`);
-        },
-        wasmPath,
-        jsPath
-      );
+      // Helper to fetch and create a Blob URL with a specific MIME type
+      // This solves MIME type errors on servers that return application/octet-stream
+      const fetchAsBlobUrl = async (url: string, mime: string) => {
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`Failed to fetch ${url}: ${resp.status}`);
+        const blob = await resp.blob();
+        return URL.createObjectURL(new Blob([blob], { type: mime }));
+      };
+
+      try {
+        const [wasmBlobUrl, jsBlobUrl] = await Promise.all([
+          fetchAsBlobUrl(wasmPath, 'application/wasm'),
+          fetchAsBlobUrl(jsPath, 'application/javascript')
+        ]);
+
+        await unwrapper.loadLibrary(
+          (mode: string, progress: number) => {
+            if (onProgress) onProgress(mode, progress);
+            else console.log(`xatlas [${mode}]: ${Math.round(progress * 100)}%`);
+          },
+          wasmBlobUrl,
+          jsBlobUrl
+        );
+      } catch (err) {
+        console.error('Initial unwrap load failed:', err);
+        // Fallback to direct paths if fetch fails
+        await unwrapper.loadLibrary(
+          (mode: string, progress: number) => {
+            if (onProgress) onProgress(mode, progress);
+          },
+          wasmPath,
+          jsPath
+        );
+      }
 
       this.instance = unwrapper;
     }
