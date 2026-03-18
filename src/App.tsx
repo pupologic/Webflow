@@ -7,6 +7,9 @@ import type { OverlayData } from '@/components/ui-custom/OverlayManager';
 import { Toaster, toast } from 'sonner';
 import { UVOverlayPanel } from '@/components/ui-custom/UVOverlayPanel';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
+import { USDZLoader } from 'three/examples/jsm/loaders/USDZLoader.js';
 import suzanneObjStr from '@/models/Suzanne.obj?raw';
 import { Dashboard } from '@/components/ui-custom/Dashboard';
 import { ProjectManager } from '@/services/ProjectManager';
@@ -380,12 +383,39 @@ function App() {
   const handleObjUpload = useCallback((file: File) => {
     setIsLoading(true);
     setLoadingProgress(0);
+    setLoadingStatus(`Carregando ${file.name}...`);
+    
+    const extension = file.name.split('.').pop()?.toLowerCase();
     const reader = new FileReader();
-    reader.onload = (e) => {
-      const contents = e.target?.result as string;
-      const loader = new OBJLoader();
+
+    reader.onload = async (e) => {
+      const contents = e.target?.result;
+      if (!contents) {
+        setIsLoading(false);
+        return;
+      }
+
+      let loader: any;
+
       try {
-        const object = loader.parse(contents);
+        let object: THREE.Group | THREE.Object3D;
+
+        if (extension === 'glb' || extension === 'gltf') {
+          loader = new GLTFLoader();
+          const gltf = await loader.parseAsync(contents, '');
+          object = gltf.scene;
+        } else if (extension === 'fbx') {
+          loader = new FBXLoader();
+          object = loader.parse(contents, '');
+        } else if (extension === 'usdz') {
+          loader = new USDZLoader();
+          object = loader.parse(contents);
+        } else {
+          // Default to OBJ
+          loader = new OBJLoader();
+          object = loader.parse(contents as string);
+        }
+
         const parts: ModelPart[] = [];
         
         object.traverse((child) => {
@@ -406,19 +436,27 @@ function App() {
 
         if (parts.length > 0) {
           setModelParts(parts);
-          setModelName(file.name.replace(/\.obj$/i, ''));
-          handleClear(); // Automatically create a baseline texture
-          toast.success('Modelo OBJ carregado com sucesso!');
+          setModelName(file.name.replace(/\.[^/.]+$/, ""));
+          handleClear(); 
+          toast.success(`${file.name} carregado com sucesso!`);
         } else {
-          toast.error('O arquivo OBJ não contém geometrias válidas.');
+          toast.error('O arquivo não contém geometrias válidas.');
         }
       } catch (err) {
         console.error(err);
-        toast.error('Erro ao processar o arquivo OBJ.');
+        toast.error(`Erro ao processar o arquivo ${extension?.toUpperCase()}.`);
+      } finally {
+        clearLoadingOverlay(1000);
       }
     };
-    reader.readAsText(file);
-  }, [handleClear]);
+
+    // Use ArrayBuffer for binary formats, Text for OBJ
+    if (extension === 'glb' || extension === 'fbx' || extension === 'usdz') {
+      reader.readAsArrayBuffer(file);
+    } else {
+      reader.readAsText(file);
+    }
+  }, [handleClear, clearLoadingOverlay]);
 
   const handleSaveProject = async () => {
     if (!layerControls) return;

@@ -91,7 +91,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onLoadProjec
               <div className="relative overflow-hidden flex items-center gap-4 p-5 rounded-2xl border border-dashed border-white/20 bg-transparent hover:bg-white/5 hover:border-white/40 transition-all text-left group cursor-pointer">
                 <input
                   type="file"
-                  accept=".obj"
+                  accept=".obj,.glb,.gltf,.fbx,.usdz"
                   onChange={handleFileUpload}
                   className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
                   title="Carregar modelo OBJ"
@@ -100,8 +100,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onLoadProjec
                   <Upload className="w-7 h-7 text-zinc-400 group-hover:text-blue-400" />
                 </div>
                 <div>
-                  <h3 className="font-semibold text-zinc-100">Carregar OBJ Customizado</h3>
-                  <p className="text-xs text-zinc-500">Importe seu próprio modelo 3D</p>
+                   <h3 className="font-semibold text-zinc-100">Carregar Modelo 3D</h3>
+                  <p className="text-xs text-zinc-500">OBJ, GLB, FBX ou USDZ</p>
                 </div>
               </div>
             </div>

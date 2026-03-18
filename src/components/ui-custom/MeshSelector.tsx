@@ -118,11 +118,11 @@ export const MeshSelector: React.FC<MeshSelectorProps> = ({
           className="w-full flex items-center justify-center gap-2 rounded-xl py-6 border bg-zinc-800 border-zinc-500 text-zinc-100 shadow-md hover:bg-zinc-700"
         >
           <Box className="w-4 h-4" />
-          <span className="text-xs font-medium tracking-wide">UPLOAD NEW OBJ</span>
+          <span className="text-xs font-medium tracking-wide">UPLOAD NEW MODEL</span>
         </Button>
         <input
           type="file"
-          accept=".obj"
+          accept=".obj,.glb,.gltf,.fbx,.usdz"
           ref={fileInputRef}
           onChange={handleFileChange}
           className="hidden"
