@@ -11,9 +11,9 @@ export class UVUnwrapper {
         BufferAttribute: THREE.BufferAttribute,
       });
 
-      const baseUrl = window.location.origin;
-      const wasmPath = `${baseUrl}/xatlas/xatlas.wasm`;
-      const jsPath = `${baseUrl}/xatlas/xatlas.js`;
+      // Use relative paths to support hosting in subdirectories (like GitHub Pages)
+      const wasmPath = 'xatlas/xatlas.wasm';
+      const jsPath = 'xatlas/xatlas.js';
 
       // Helper to fetch and create a Blob URL with a specific MIME type
       // This solves MIME type errors on servers that return application/octet-stream
