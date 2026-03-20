@@ -26,56 +26,58 @@ export const BrushStrokePreview: React.FC<BrushStrokePreviewProps> = ({
     ctx.clearRect(0, 0, width, height);
 
     // Render "S" shape stroke
-    // Calculate total length of "S" curve (roughly)
-    const curveLength = width; 
-    const stepDist = Math.max(1, brush.size * brush.spacing);
+    const curveLength = width;
+    const previewBaseSize = 12; // Use constant height for all presets as requested
+    // Use a smaller spacing for preview to make it look smooth/filled, but with slight overlap
+    const previewSpacing = Math.min(brush.spacing || 2, 4);
+    const stepDist = Math.max(0.5, (previewBaseSize / 2) * previewSpacing);
     const steps = Math.floor(curveLength / stepDist);
-    
+
     ctx.save();
-    
+
     // We'll simulate drawing stamps
     for (let i = 0; i <= steps; i++) {
-        const t = i / steps;
-        
-        // "S" curve path
-        const x = 10 + t * (width - 20);
-        const y = height / 2 + Math.sin(t * Math.PI * 2) * (height / 4);
-        
-        // Pressure simulation (0 at ends, 1 in middle)
-        let pressure = Math.sin(t * Math.PI);
-        const curve = brush.pressureCurve || 1.0;
-        pressure = Math.pow(pressure, curve);
+      const t = i / steps;
 
-        const size = brush.usePressureSize ? brush.size * pressure : brush.size;
-        const opacity = brush.usePressureOpacity ? brush.opacity * pressure : brush.opacity;
+      // "S" curve path
+      const x = 10 + t * (width - 20);
+      const y = height / 2 + Math.sin(t * Math.PI * 2) * (height / 4);
 
-        // Draw stamp
-        ctx.globalAlpha = opacity;
-        ctx.fillStyle = color;
+      // Pressure simulation (0 at ends, 1 in middle)
+      let pressure = Math.sin(t * Math.PI);
+      const curve = brush.pressureCurve || 1.0;
+      pressure = Math.pow(pressure, curve);
 
-        if (brush.type === 'circle') {
-            ctx.beginPath();
-            ctx.arc(x, y, size / 2, 0, Math.PI * 2);
-            ctx.fill();
-        } else if (brush.type === 'square') {
-            ctx.fillRect(x - size / 2, y - size / 2, size, size);
-        } else if (brush.type === 'texture' && brush.textureId) {
-            // For texture, we'd need to load the image. For preview, we'll use a soft circle if image not loaded
-            // In a real app, we'd preload these.
-            ctx.beginPath();
-            ctx.arc(x, y, size / 2, 0, Math.PI * 2);
-            ctx.fill();
-        }
+      const size = brush.usePressureSize ? previewBaseSize * pressure : previewBaseSize;
+      const opacity = brush.usePressureOpacity ? brush.opacity * pressure : brush.opacity;
+
+      // Draw stamp
+      ctx.globalAlpha = opacity;
+      ctx.fillStyle = color;
+
+      if (brush.type === 'circle') {
+        ctx.beginPath();
+        ctx.arc(x, y, size / 2, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (brush.type === 'square') {
+        ctx.fillRect(x - size / 2, y - size / 2, size, size);
+      } else if (brush.type === 'texture' && brush.textureId) {
+        // For texture, we'd need to load the image. For preview, we'll use a soft circle if image not loaded
+        // In a real app, we'd preload these.
+        ctx.beginPath();
+        ctx.arc(x, y, size / 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
-    
+
     ctx.restore();
   }, [brush, width, height, color]);
 
   return (
-    <canvas 
-      ref={canvasRef} 
-      width={width} 
-      height={height} 
+    <canvas
+      ref={canvasRef}
+      width={width}
+      height={height}
       className="rounded-md overflow-hidden bg-zinc-900/30"
     />
   );

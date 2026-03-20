@@ -87,9 +87,13 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
   const groupRef = useRef<THREE.Group>(null);
   const { camera, gl, size } = useThree();
   const pointerRafRef = useRef<number>(0);
-  const [cursor, setCursor] = useState<{ point: THREE.Vector3; normal: THREE.Vector3; radius: number, lazyPoint?: THREE.Vector3 } | null>(null);
   const isOrbitingRef = useRef(false);
   const isPickingRef = useRef(false);
+  const cursorGroupRef = useRef<THREE.Group>(null);
+  const cursorRingRef = useRef<THREE.Mesh>(null);
+  const symmetryGroupRef = useRef<THREE.Group>(null);
+  const lazyGroupRef = useRef<THREE.Group>(null);
+  const lazyLineRef = useRef<any>(null);
   
   const { 
     initPaintSystem, startPainting, paint, stopPainting,
@@ -99,6 +103,8 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
     mergeLayer, mergeFolder,
     renderGradient, startGradientPreview, previewGradient,
     exportProjectLayersData, importProjectLayersData,
+    importImageToLayer,
+    exportTarget, pbrTargets,
     lazyPoint
   } = useWebGLPaint(
     groupRef,
@@ -127,7 +133,7 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
         createLayerMask, deleteLayerMask, toggleLayerMask, setEditingMask,
         mergeLayer, mergeFolder,
         renderGradient, startGradientPreview, previewGradient,
-        exportProjectLayersData, 
+        exportProjectLayersData, exportTarget, pbrTargets, importImageToLayer,
         importProjectLayersData: (data: any[]) => {
           setLoadingProgress(p => ({ ...p, layers: 0 }));
           return importProjectLayersData(data, (prog) => {
@@ -136,7 +142,7 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
         }
       });
     }
-  }, [layers, activeLayerId, addLayer, addFolder, removeLayer, updateLayer, setLayerActive, moveLayer, reorderLayer, clearCanvas, fillCanvas, undo, redo, exportTexture, onLayerControlsReady, createLayerMask, deleteLayerMask, toggleLayerMask, setEditingMask, exportProjectLayersData, importProjectLayersData, renderGradient, startGradientPreview, previewGradient]);
+  }, [layers, activeLayerId, addLayer, addFolder, removeLayer, updateLayer, setLayerActive, moveLayer, reorderLayer, clearCanvas, fillCanvas, undo, redo, exportTexture, onLayerControlsReady, createLayerMask, deleteLayerMask, toggleLayerMask, setEditingMask, exportProjectLayersData, importProjectLayersData, importImageToLayer, renderGradient, startGradientPreview, previewGradient, exportTarget, pbrTargets]);
 
   // Initialize texture on mount and when resolution changes
   useEffect(() => {
@@ -215,7 +221,11 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
   }, [texture, pbrTextures, flatShading, matcapName, matcapTexture, objectColor, roughness, metalness, bumpScale]);
 
   const updateCursor = useCallback((hit: THREE.Intersection | undefined, pressure: number = 1.0, forceIsPainting?: boolean) => {
-    if (hit) {
+    const group = cursorGroupRef.current;
+    if (!group) return;
+
+    if (hit && isVisible && brushSettings.mode !== 'gradient') {
+      group.visible = true;
       const dist = camera.position.distanceTo(hit.point);
       let radius = 0.1;
       const dynamicSize = Math.max(4, brushSettings.size * Math.max(0.05, pressure));
@@ -230,24 +240,96 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
         radius = (dynamicSize / size.height) * worldHeight * 0.5;
       }
 
-      const normal = hit.face?.normal.clone() || new THREE.Vector3(0, 0, 1);
-      // Transform normal by the intersected object's world matrix
-      if (hit.object) {
-         normal.transformDirection(hit.object.matrixWorld).normalize();
+      let normal = hit.face?.normal.clone() || new THREE.Vector3(0, 0, 1);
+      if (brushSettings.projectFromCamera) {
+        camera.getWorldDirection(normal).negate();
+      } else if (hit.object) {
+        normal.transformDirection(hit.object.matrixWorld).normalize();
       }
 
-      const isActuallyPainting = forceIsPainting !== undefined ? forceIsPainting : internalIsPainting;
+      // Update Main Cursor
+      group.position.copy(hit.point);
+      group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+      if (cursorRingRef.current) {
+        cursorRingRef.current.scale.set(radius, radius, 1);
+      }
 
-      setCursor({ 
-        point: hit.point, 
-        normal, 
-        radius,
-        lazyPoint: (brushSettings.lazyMouse && isActuallyPainting) ? lazyPoint.clone() : undefined
-      });
+      // Update Symmetry
+      const symGroup = symmetryGroupRef.current;
+      if (symGroup) {
+        symGroup.children.forEach(c => c.visible = false);
+        
+        if (brushSettings.symmetryMode && brushSettings.symmetryMode !== 'none' && groupRef.current) {
+          const mode = brushSettings.symmetryMode;
+          const axis = brushSettings.symmetryAxis || 'x';
+          const points = brushSettings.radialPoints || 4;
+          
+          if (mode === 'mirror') {
+             const localPos = groupRef.current.worldToLocal(hit.point.clone());
+             const localNorm = normal.clone();
+             if (axis === 'x') { localPos.x *= -1; localNorm.x *= -1; }
+             else if (axis === 'y') { localPos.y *= -1; localNorm.y *= -1; }
+             else if (axis === 'z') { localPos.z *= -1; localNorm.z *= -1; }
+             
+             const symChild = symGroup.children[0] as THREE.Group;
+             if (symChild) {
+               symChild.visible = true;
+               symChild.position.copy(groupRef.current.localToWorld(localPos)).sub(hit.point);
+               symChild.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), localNorm.normalize()).premultiply(group.quaternion.clone().invert());
+               symChild.scale.set(radius, radius, 1);
+             }
+          } else if (mode === 'radial') {
+             const angleStep = (Math.PI * 2) / points;
+             const localOrigin = groupRef.current.worldToLocal(hit.point.clone());
+             
+             for (let i = 1; i < points; i++) {
+               const localPos = localOrigin.clone();
+               const localNorm = normal.clone();
+               const theta = angleStep * i;
+               
+               if (axis === 'y') {
+                 localPos.set(localOrigin.x * Math.cos(theta) - localOrigin.z * Math.sin(theta), localOrigin.y, localOrigin.x * Math.sin(theta) + localOrigin.z * Math.cos(theta));
+                 localNorm.set(normal.x * Math.cos(theta) - normal.z * Math.sin(theta), normal.y, normal.x * Math.sin(theta) + normal.z * Math.cos(theta));
+               } else if (axis === 'x') {
+                 localPos.set(localOrigin.x, localOrigin.y * Math.cos(theta) - localOrigin.z * Math.sin(theta), localOrigin.y * Math.sin(theta) + localOrigin.z * Math.cos(theta));
+                 localNorm.set(normal.x, normal.y * Math.cos(theta) - normal.z * Math.sin(theta), normal.y * Math.sin(theta) + normal.z * Math.cos(theta));
+               } else if (axis === 'z') {
+                 localPos.set(localOrigin.x * Math.cos(theta) - localOrigin.y * Math.sin(theta), localOrigin.x * Math.sin(theta) + localOrigin.y * Math.cos(theta), localOrigin.z);
+                 localNorm.set(normal.x * Math.cos(theta) - normal.y * Math.sin(theta), normal.x * Math.sin(theta) + normal.y * Math.cos(theta), normal.z);
+               }
+
+               const symChild = symGroup.children[i-1] as THREE.Group;
+               if (symChild) {
+                 symChild.visible = true;
+                 symChild.position.copy(groupRef.current.localToWorld(localPos)).sub(hit.point);
+                 symChild.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), localNorm.normalize()).premultiply(group.quaternion.clone().invert());
+                 symChild.scale.set(radius, radius, 1);
+               }
+             }
+          }
+        }
+      }
+
+      // Update Lazy Point
+      const lazyGroup = lazyGroupRef.current;
+      if (lazyGroup) {
+        const isActuallyPainting = forceIsPainting !== undefined ? forceIsPainting : internalIsPainting;
+        if (brushSettings.lazyMouse && isActuallyPainting && lazyPoint) {
+          lazyGroup.visible = true;
+          lazyGroup.position.copy(lazyPoint).sub(hit.point);
+          lazyGroup.scale.set(radius, radius, 1);
+          if (lazyLineRef.current) {
+             lazyLineRef.current.setPoints([new THREE.Vector3(0,0,0), lazyGroup.position.clone().negate()]);
+          }
+        } else {
+          lazyGroup.visible = false;
+        }
+      }
+
     } else {
-      setCursor(null);
+      group.visible = false;
     }
-  }, [camera, brushSettings.size, brushSettings.lazyMouse, size.height, lazyPoint, internalIsPainting]);
+  }, [camera, brushSettings.size, brushSettings.lazyMouse, brushSettings.symmetryMode, brushSettings.symmetryAxis, brushSettings.radialPoints, size.height, lazyPoint, internalIsPainting, isVisible]);
 
   // Hold latest interaction for throttled move
   const latestInteraction = useRef<{ hit: THREE.Intersection, pressure: number } | null>(null);
@@ -270,7 +352,6 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
       // Secondary buttons always orbit
       if (nativeEvent.buttons > 1) {
         isOrbitingRef.current = true;
-        setCursor(null);
         return;
       }
 
@@ -353,7 +434,7 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
 
       // Skip cursor updates if we are orbiting or using secondary buttons
       if (isOrbitingRef.current || (nativeEvent.pointerType === 'mouse' && nativeEvent.buttons > 1)) {
-        setCursor(null);
+        updateCursor(undefined); // Hide cursor
         return;
       }
 
@@ -364,15 +445,12 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
 
       if (brushSettings.mode as any === 'gradient') return;
       
-      // Update cursor even if not painting for stylus/mouse preview
-      updateCursor(hit, pressure);
-
       latestInteraction.current = { hit, pressure };
       if (pointerRafRef.current === 0) {
         pointerRafRef.current = requestAnimationFrame(processPointerEvent);
       }
     },
-    [processPointerEvent, brushSettings.mode, gradientSession, camera]
+    [processPointerEvent, brushSettings.mode, gradientSession, camera, updateCursor]
   );
 
   const handlePointerUp = useCallback(
@@ -408,14 +486,17 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
     [gl, stopPainting, onPaintingChange, gradientSession, brushSettings.mode]
   );
 
-  const handlePointerLeave = useCallback((event: any) => {
-    handlePointerUp(event);
-    setCursor(null);
-  }, [handlePointerUp]);
+  const handlePointerLeave = useCallback(() => {
+    // Don't stop painting here anymore!
+    // Just hide the cursor
+    updateCursor(undefined);
+    // Signal a stroke break to useWebGLPaint so it doesn't interpolate when re-entering
+    latestInteraction.current = { hit: null as any, pressure: 0 };
+  }, [updateCursor]);
 
   // Global pointerup listener to ensure we stop creating/dragging even if mouse is off-mesh
   useEffect(() => {
-    const isInteracting = (brushSettings.mode as any) === 'gradient' && gradientSession?.isCreating;
+    const isInteracting = ((brushSettings.mode as any) === 'gradient' && gradientSession?.isCreating) || internalIsPainting;
     if (!isInteracting) return;
 
     const onGlobalPointerMove = (e: PointerEvent) => {
@@ -448,15 +529,22 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
     };
 
     const onGlobalPointerUp = (e: PointerEvent) => {
-      setGradientSession?.(prev => {
-        if (prev?.isCreating) {
-          // Auto apply on final release
-          renderGradient?.(prev.start, prev.end);
-          return null;
-        }
-        return prev;
-      });
-      onPaintingChange?.(false);
+      if ((brushSettings.mode as any) === 'gradient') {
+        setGradientSession?.(prev => {
+          if (prev?.isCreating) {
+            // Auto apply on final release
+            renderGradient?.(prev.start, prev.end);
+            return null;
+          }
+          return prev;
+        });
+      } else if (internalIsPainting) {
+        onPaintingChange?.(false);
+        setInternalIsPainting(false);
+        stopPainting();
+        latestInteraction.current = null;
+      }
+
       try {
         gl.domElement.releasePointerCapture(e.pointerId);
       } catch (err) {}
@@ -468,7 +556,7 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
       window.removeEventListener('pointermove', onGlobalPointerMove);
       window.removeEventListener('pointerup', onGlobalPointerUp);
     };
-  }, [brushSettings.mode, gradientSession?.isCreating, gradientSession?.start, setGradientSession, onPaintingChange, gl, camera, previewGradient, renderGradient]);
+  }, [brushSettings.mode, internalIsPainting, stopPainting, gradientSession?.isCreating, gradientSession?.start, setGradientSession, onPaintingChange, gl, camera, previewGradient, renderGradient]);
 
   useEffect(() => {
     return () => {
@@ -557,13 +645,11 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
         )}
       </group>
 
-      {cursor && isVisible && brushSettings.mode !== 'gradient' && (
-        <group>
-          <mesh 
-            position={cursor.point} 
-            quaternion={new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), cursor.normal)}
-          >
-            <ringGeometry args={[cursor.radius * 0.95, cursor.radius, 32]} />
+      {isVisible && brushSettings.mode !== 'gradient' && (
+        <group ref={cursorGroupRef} visible={false}>
+          {/* Main Cursor Ring */}
+          <mesh ref={cursorRingRef}>
+            <ringGeometry args={[0.95, 1, 32]} />
             <meshBasicMaterial 
               color={brushSettings.color} 
               opacity={0.6} 
@@ -574,102 +660,52 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
             />
           </mesh>
 
-          {(() => {
-            if (!brushSettings.symmetryMode || brushSettings.symmetryMode === 'none') return null;
-            
-            const mode = brushSettings.symmetryMode;
-            const axis = brushSettings.symmetryAxis || 'x';
-            const symmetryPoints: { pos: THREE.Vector3, normal: THREE.Vector3 }[] = [];
+          {/* Symmetry Cursors Pool (32 max) */}
+          <group ref={symmetryGroupRef}>
+            {Array.from({ length: 32 }).map((_, i) => (
+               <group key={i} visible={false}>
+                 <mesh>
+                   <ringGeometry args={[0.95, 1, 32]} />
+                   <meshBasicMaterial 
+                     color={brushSettings.color} 
+                     opacity={0.4} 
+                     transparent 
+                     depthTest={false} 
+                     depthWrite={false} 
+                     side={THREE.DoubleSide} 
+                   />
+                 </mesh>
+                 <mesh>
+                   <circleGeometry args={[0.05, 16]} />
+                   <meshBasicMaterial 
+                     color={brushSettings.color} 
+                     opacity={0.6} 
+                     transparent 
+                     depthTest={false} 
+                     depthWrite={false} 
+                     side={THREE.DoubleSide} 
+                   />
+                 </mesh>
+               </group>
+            ))}
+          </group>
 
-            if (mode === 'mirror' && groupRef.current) {
-              const localPos = groupRef.current.worldToLocal(cursor.point.clone());
-              const localNorm = cursor.normal.clone();
-              
-              if (axis === 'x') { localPos.x *= -1; localNorm.x *= -1; }
-              else if (axis === 'y') { localPos.y *= -1; localNorm.y *= -1; }
-              else if (axis === 'z') { localPos.z *= -1; localNorm.z *= -1; }
-              
-              symmetryPoints.push({ 
-                pos: groupRef.current.localToWorld(localPos), 
-                normal: localNorm 
-              });
-            } else if (mode === 'radial' && groupRef.current) {
-              const points = brushSettings.radialPoints || 4;
-              const angleStep = (Math.PI * 2) / points;
-              
-              const localOrigin = groupRef.current.worldToLocal(cursor.point.clone());
-              
-              for (let i = 1; i < points; i++) {
-                const localPos = localOrigin.clone();
-                const localNorm = cursor.normal.clone();
-                const theta = angleStep * i;
-                
-                if (axis === 'y') {
-                  localPos.set(localOrigin.x * Math.cos(theta) - localOrigin.z * Math.sin(theta), localOrigin.y, localOrigin.x * Math.sin(theta) + localOrigin.z * Math.cos(theta));
-                  localNorm.set(cursor.normal.x * Math.cos(theta) - cursor.normal.z * Math.sin(theta), cursor.normal.y, cursor.normal.x * Math.sin(theta) + cursor.normal.z * Math.cos(theta));
-                } else if (axis === 'x') {
-                  localPos.set(localOrigin.x, localOrigin.y * Math.cos(theta) - localOrigin.z * Math.sin(theta), localOrigin.y * Math.sin(theta) + localOrigin.z * Math.cos(theta));
-                  localNorm.set(cursor.normal.x, cursor.normal.y * Math.cos(theta) - cursor.normal.z * Math.sin(theta), cursor.normal.y * Math.sin(theta) + cursor.normal.z * Math.cos(theta));
-                } else if (axis === 'z') {
-                  localPos.set(localOrigin.x * Math.cos(theta) - localOrigin.y * Math.sin(theta), localOrigin.x * Math.sin(theta) + localOrigin.y * Math.cos(theta), localOrigin.z);
-                  localNorm.set(cursor.normal.x * Math.cos(theta) - cursor.normal.y * Math.sin(theta), cursor.normal.x * Math.sin(theta) + cursor.normal.y * Math.cos(theta), cursor.normal.z);
-                }
-                
-                symmetryPoints.push({ 
-                  pos: groupRef.current.localToWorld(localPos), 
-                  normal: localNorm 
-                });
-              }
-            }
-
-            return symmetryPoints.map((p, i) => (
-              <group 
-                key={`sym-${i}`}
-                position={p.pos} 
-                quaternion={new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), p.normal.normalize())}
-              >
-                <mesh>
-                  <ringGeometry args={[cursor.radius * 0.95, cursor.radius, 32]} />
-                  <meshBasicMaterial 
-                    color={brushSettings.color} 
-                    opacity={0.4} 
-                    transparent 
-                    depthTest={false} 
-                    depthWrite={false} 
-                    side={THREE.DoubleSide} 
-                  />
-                </mesh>
-                <mesh>
-                  <circleGeometry args={[cursor.radius * 0.05, 16]} />
-                  <meshBasicMaterial 
-                    color={brushSettings.color} 
-                    opacity={0.6} 
-                    transparent 
-                    depthTest={false} 
-                    depthWrite={false} 
-                    side={THREE.DoubleSide} 
-                  />
-                </mesh>
-              </group>
-            ));
-          })()}
-
-          {brushSettings.lazyMouse && cursor.lazyPoint && (
-             <group>
-               <mesh position={cursor.lazyPoint} quaternion={new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), cursor.normal)}>
-                 <ringGeometry args={[cursor.radius * 0.45, cursor.radius * 0.5, 16]} />
-                 <meshBasicMaterial color="#ffffff" opacity={0.6} transparent depthTest={false} />
-               </mesh>
-               <Line 
-                 points={[cursor.point, cursor.lazyPoint]} 
-                 color="#ffffff" 
-                 lineWidth={1} 
-                 transparent 
-                 opacity={0.3} 
-                 depthTest={false}
-               />
-             </group>
-          )}
+          {/* Lazy Mouse Cursor */}
+          <group ref={lazyGroupRef} visible={false}>
+             <mesh>
+                <ringGeometry args={[0.45, 0.5, 16]} />
+                <meshBasicMaterial color="#ffffff" opacity={0.6} transparent depthTest={false} />
+             </mesh>
+             <Line 
+                ref={lazyLineRef}
+                points={[new THREE.Vector3(0,0,0), new THREE.Vector3(0.01, 0.01, 0.01)]} 
+                color="#ffffff" 
+                lineWidth={1} 
+                transparent 
+                opacity={0.3} 
+                depthTest={false}
+             />
+          </group>
         </group>
       )}
 

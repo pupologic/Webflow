@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import * as THREE from 'three';
-import { Box, Boxes, Image as ImageIcon, Save, Columns2, Home, PaintBucket, Sun, Sparkles, Layers, Eclipse, Brush, Scissors } from 'lucide-react';
+import { Box, Boxes, Image as ImageIcon, Save, Columns2, Home, PaintBucket, Sun, Sparkles, Layers, Eclipse, Brush, Scissors, Download } from 'lucide-react';
 import logoImg from '@/logo/logo.png';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { MeshSelector } from '@/components/ui-custom/MeshSelector';
@@ -33,11 +33,9 @@ export interface TopHeaderProps {
   modelTransform: any;
   handleUpdateTransform: (transformType: 'position' | 'rotation' | 'scale', axis: 0 | 1 | 2 | 'all', value: number) => void;
   
-  currentTexture: any;
   previewCanvas: any;
   handleExport: () => void;
   handleClear: () => void;
-  handleImport: (file: File) => void;
   textureResolution: number;
   setTextureResolution: (v: number) => void;
   
@@ -84,7 +82,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   setIsDashboard, modelName, setModelName, handleObjUpload,
   showWireframe, setShowWireframe, flatShading, setFlatShading, modelParts, handleTogglePartVisibility,
   modelTransform, handleUpdateTransform,
-  currentTexture, previewCanvas, handleExport, handleClear, handleImport, textureResolution, setTextureResolution,
+  previewCanvas, handleExport, handleClear, textureResolution, setTextureResolution,
   handleSaveProject, showUVPanel, setShowUVPanel, handleFill,
   brushSettings, setBrushSettings,
   matcapName, setMatcapName, lastMatcap, lightSetup, setLightSetup, lightIntensity, setLightIntensity,
@@ -187,14 +185,11 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
             </PopoverTrigger>
             <PopoverContent className="w-80 bg-[#121214] border-white/10 p-5 mt-2" align="start">
               <TexturePreview 
-              texture={currentTexture}
-              previewCanvas={previewCanvas}
-              onExport={handleExport}
-              onClear={handleClear}
-              onImport={handleImport}
-              resolution={textureResolution}
-              onResolutionChange={setTextureResolution}
-            />
+                previewCanvas={previewCanvas}
+                onClear={handleClear}
+                resolution={textureResolution}
+                onResolutionChange={setTextureResolution}
+              />
             </PopoverContent>
           </Popover>
         </div>
@@ -204,10 +199,18 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
       <div className="flex items-center gap-0.5 md:gap-1">
         <button
           onClick={handleSaveProject}
-          className="text-emerald-400 hover:text-emerald-300 hover:bg-emerald-400/10 transition-colors p-1.5 md:p-2 rounded-md cursor-pointer mr-0.5 md:mr-2 flex items-center justify-center"
-          title="Savar Projeto (Ctrl+S)"
+          className="text-emerald-400 hover:text-emerald-300 hover:bg-emerald-400/10 transition-colors p-1.5 md:p-2 rounded-md cursor-pointer mr-0.5 md:mr-1 flex items-center justify-center"
+          title="Salvar Projeto (Ctrl+S)"
         >
           <Save className="w-4 h-4 md:w-5 h-5" />
+        </button>
+
+        <button
+          onClick={handleExport}
+          className="text-blue-400 hover:text-blue-300 hover:bg-blue-400/10 transition-colors p-1.5 md:p-2 rounded-md cursor-pointer mr-0.5 md:mr-2 flex items-center justify-center"
+          title="Exportar Texturas (PBR)"
+        >
+          <Download className="w-4 h-4 md:w-5 h-5" />
         </button>
         
         <button

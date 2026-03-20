@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react'; 
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'; 
 import * as THREE from 'three';
 import { Scene3D } from '@/components/3d/Scene3D';
 import type { BrushSettings } from '@/hooks/useWebGLPaint';
@@ -21,6 +21,7 @@ import { LoadingOverlay } from '@/components/ui-custom/LoadingOverlay';
 import type { GradientSession } from '@/components/3d/PaintableMesh';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 import { UVUnwrapper } from '@/services/UVUnwrapper';
+import { ExportModal } from '@/components/ui-custom/ExportModal';
 import './App.css';
 
 // Initialize BVH
@@ -34,6 +35,8 @@ export interface ModelPart {
   geometry: THREE.BufferGeometry;
   visible: boolean;
 }
+
+const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 
 function App() {
   const [brushSettings, setBrushSettings] = useState<BrushSettings>({
@@ -67,15 +70,18 @@ function App() {
     usePressureSize: true,
     usePressureOpacity: true,
     pressureCurve: 1.0,
+    performanceMode: isMobile,
+    projectFromCamera: true, 
   });
 
   const [modelName, setModelName] = useState<string>('Suzanne');
+  const [modelData, setModelData] = useState<Blob | ArrayBuffer | string | undefined>(undefined);
+  const [modelFormat, setModelFormat] = useState<'obj' | 'glb' | 'fbx' | 'usdz' | undefined>(undefined);
   const [modelParts, setModelParts] = useState<ModelPart[]>([]);
   const [overlays, setOverlays] = useState<OverlayData[]>([]);
   
   const [gradientSession, setGradientSession] = useState<GradientSession | null>(null);
   const layerControlsRef = useRef<any>(null);
-
 
   // Project Management State
   const [isDashboard, setIsDashboard] = useState(true);
@@ -97,7 +103,6 @@ function App() {
     loadingClearTimerRef.current = setTimeout(() => {
       setIsLoading(false);
       setLoadingStatus('');
-      // Delay resetting the guard so lingering updates don't re-trigger it
       setTimeout(() => setIsUnwrapping(false), 500);
       loadingClearTimerRef.current = null;
     }, delay);
@@ -128,17 +133,17 @@ function App() {
   const [previewCanvas, setPreviewCanvas] = useState<HTMLCanvasElement | null>(null);
   const [layerControls, setLayerControls] = useState<any>(null);
   const initialLayersToLoadRef = useRef<any[] | null>(null);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
 
-  // Trigger resize event when UI side-panels toggle to force R3F to update centering
+  const allGeometries = useMemo(() => modelParts.map(p => p.geometry), [modelParts]);
+
   useEffect(() => {
-    // Small delay to allow the DOM width to update before the resize event
     const timer = setTimeout(() => {
       window.dispatchEvent(new Event('resize'));
     }, 50);
     return () => clearTimeout(timer);
   }, [showUVPanel, uvPanelWidth]);
   
-  // Environment controls
   const [matcapName, setMatcapName] = useState<string | null>('softlight_grey.png');
   const [lastMatcap, setLastMatcap] = useState<string>('softlight_grey.png');
   const [lightSetup, setLightSetup] = useState<'3point' | 'directional' | 'ambient'>('3point');
@@ -151,7 +156,6 @@ function App() {
   const [roughness] = useState(0.8);
   const [metalness] = useState(0.1);
   
-  // Ambient Occlusion (SAO) State
   const [saoEnabled, setSaoEnabled] = useState(false);
   const [saoIntensity, setSaoIntensity] = useState(0.5);
   const [saoScale, setSaoScale] = useState(1.0);
@@ -239,7 +243,7 @@ function App() {
       console.error('Failed to parse Suzanne.obj', err);
     }
     return false;
-  }, []);
+  }, [suzanneObjStr]);
 
   useEffect(() => {
     loadSuzanne();
@@ -250,39 +254,11 @@ function App() {
     if (canvas) setPreviewCanvas(canvas);
   }, []);
 
-  const handleExport = useCallback(async () => {
-    if (layerControls?.exportTexture) {
-      const dataUrl = layerControls.exportTexture('png');
-      if (dataUrl) {
-        const link = document.createElement('a');
-        link.download = 'texture-paint.png';
-        link.href = dataUrl;
-        link.click();
-      }
-    } else {
-      toast.error('Nenhuma textura para exportar');
-    }
-  }, [layerControls]);
-
-  const handleImport = useCallback((file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        if (textureRef.current && textureRef.current.image) {
-          const canvas = textureRef.current.image as HTMLCanvasElement;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            textureRef.current.needsUpdate = true;
-          }
-        }
-      };
-      img.src = e.target?.result as string;
-    };
-    reader.readAsDataURL(file);
+  const handleExport = useCallback(() => {
+    setIsExportModalOpen(true);
   }, []);
+
+
 
   const handleClear = useCallback(() => {
     if (layerControls?.clearCanvas) {
@@ -350,26 +326,19 @@ function App() {
     
     try {
       const geometries = modelParts.map(p => p.geometry);
-      
-      // Unwrap and pack with progress callback
       const newGeometries = await UVUnwrapper.packAtlas(geometries, (prog) => {
         setLoadingProgress(prev => Math.max(prev, prog)); 
       });
       
-      const newParts = modelParts.map((part, i) => ({
-        ...part,
-        geometry: newGeometries[i]
-      }));
+      const newParts = modelParts.map((part, i) => {
+        const geom = newGeometries[i];
+        if ((geom as any).computeBoundsTree) (geom as any).computeBoundsTree();
+        return { ...part, geometry: geom };
+      });
 
-      // Update state
       setModelParts(newParts);
-      
-      // Important: wait a tiny bit for React to commit model changes
       await new Promise(resolve => setTimeout(resolve, 100));
-
-      // Clear canvas as UVs changed
       handleClear();
-      
       setLoadingProgress(100);
       toast.success('UV Unwrap concluído com sucesso!');
     } catch (err) {
@@ -380,153 +349,154 @@ function App() {
     }
   };
 
+  const loadModelFromData = useCallback(async (contents: any, format: string, fileName: string) => {
+    let loader: any;
+    try {
+      let object: THREE.Group | THREE.Object3D;
+      if (format === 'glb' || format === 'gltf') {
+        loader = new GLTFLoader();
+        const gltf = await loader.parseAsync(contents, '');
+        object = gltf.scene;
+      } else if (format === 'fbx') {
+        loader = new FBXLoader();
+        object = loader.parse(contents, '');
+      } else if (format === 'usdz') {
+        loader = new USDZLoader();
+        object = loader.parse(contents);
+      } else {
+        loader = new OBJLoader();
+        object = loader.parse(contents as string);
+      }
+
+      const parts: ModelPart[] = [];
+      object.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          const geom = child.geometry as THREE.BufferGeometry;
+          if (!geom.attributes.normal) geom.computeVertexNormals();
+          geom.computeBoundsTree();
+          parts.push({
+            id: THREE.MathUtils.generateUUID(),
+            name: child.name || `Part ${parts.length + 1}`,
+            geometry: geom,
+            visible: true,
+          });
+        }
+      });
+
+      if (parts.length > 0) {
+        setModelParts(parts);
+        setModelName(fileName.replace(/\.[^/.]+$/, ""));
+        handleClear(); 
+        return true;
+      }
+    } catch (err) {
+      console.error(err);
+    }
+    return false;
+  }, [handleClear]);
+
   const handleObjUpload = useCallback((file: File) => {
     setIsLoading(true);
     setLoadingProgress(0);
     setLoadingStatus(`Carregando ${file.name}...`);
-    
     const extension = file.name.split('.').pop()?.toLowerCase();
     const reader = new FileReader();
 
     reader.onload = async (e) => {
       const contents = e.target?.result;
-      if (!contents) {
-        setIsLoading(false);
-        return;
+      if (!contents) { setIsLoading(false); return; }
+      const success = await loadModelFromData(contents, extension || 'obj', file.name);
+      if (success) {
+        setModelData(contents as any);
+        setModelFormat(extension as any);
+        toast.success(`${file.name} carregado com sucesso!`);
+      } else {
+        toast.error('O arquivo não contém geometrias válidas.');
       }
-
-      let loader: any;
-
-      try {
-        let object: THREE.Group | THREE.Object3D;
-
-        if (extension === 'glb' || extension === 'gltf') {
-          loader = new GLTFLoader();
-          const gltf = await loader.parseAsync(contents, '');
-          object = gltf.scene;
-        } else if (extension === 'fbx') {
-          loader = new FBXLoader();
-          object = loader.parse(contents, '');
-        } else if (extension === 'usdz') {
-          loader = new USDZLoader();
-          object = loader.parse(contents);
-        } else {
-          // Default to OBJ
-          loader = new OBJLoader();
-          object = loader.parse(contents as string);
-        }
-
-        const parts: ModelPart[] = [];
-        
-        object.traverse((child) => {
-          if (child instanceof THREE.Mesh) {
-            const geom = child.geometry as THREE.BufferGeometry;
-            if (!geom.attributes.normal) {
-              geom.computeVertexNormals();
-            }
-            geom.computeBoundsTree();
-            parts.push({
-              id: THREE.MathUtils.generateUUID(),
-              name: child.name || `Part ${parts.length + 1}`,
-              geometry: geom,
-              visible: true,
-            });
-          }
-        });
-
-        if (parts.length > 0) {
-          setModelParts(parts);
-          setModelName(file.name.replace(/\.[^/.]+$/, ""));
-          handleClear(); 
-          toast.success(`${file.name} carregado com sucesso!`);
-        } else {
-          toast.error('O arquivo não contém geometrias válidas.');
-        }
-      } catch (err) {
-        console.error(err);
-        toast.error(`Erro ao processar o arquivo ${extension?.toUpperCase()}.`);
-      } finally {
-        clearLoadingOverlay(1000);
-      }
+      clearLoadingOverlay(1000);
     };
 
-    // Use ArrayBuffer for binary formats, Text for OBJ
-    if (extension === 'glb' || extension === 'fbx' || extension === 'usdz') {
-      reader.readAsArrayBuffer(file);
-    } else {
-      reader.readAsText(file);
-    }
-  }, [handleClear, clearLoadingOverlay]);
+    if (extension === 'glb' || extension === 'fbx' || extension === 'usdz') reader.readAsArrayBuffer(file);
+    else reader.readAsText(file);
+  }, [clearLoadingOverlay, loadModelFromData]);
 
   const handleSaveProject = async () => {
     if (!layerControls) return;
+    setIsLoading(true);
+    setLoadingStatus('Salvando...');
+    setLoadingProgress(10);
     try {
       const exportedLayers = layerControls.exportProjectLayersData ? await layerControls.exportProjectLayersData() : [];
-
+      setLoadingProgress(80);
       const project: SavedProject = {
         id: currentProjectId || THREE.MathUtils.generateUUID(),
         name: modelName,
         lastModified: Date.now(),
         modelName,
+        modelData,
+        modelFormat,
         brushSettings,
         layersData: exportedLayers
       };
       await ProjectManager.saveProject(project);
       setCurrentProjectId(project.id);
+      setLoadingProgress(100);
       toast.success('Projeto salvo com sucesso!');
     } catch (e: any) {
       console.error(e);
       toast.error(`Erro ao salvar: ${e.message || 'Erro desconhecido'}`);
+    } finally {
+      clearLoadingOverlay(500);
     }
   };
 
   const handleNewProject = (type: 'Suzanne' | 'Cube', file?: File) => {
     setIsLoading(true);
     setLoadingProgress(0);
-    
-    // Reset transforms
-    setModelTransform({
-      position: [0, 0, 0],
-      rotation: [0, 0, 0],
-      scale: [1, 1, 1]
-    });
-
-    if (file) {
-      handleObjUpload(file);
-    } else {
-      if (type === 'Suzanne') {
-        loadSuzanne();
-      }
-      // If we had a Cube model, we'd handle it here
+    setModelTransform({ position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] });
+    if (file) handleObjUpload(file);
+    else {
+      setModelData(undefined);
+      setModelFormat(undefined);
+      if (type === 'Suzanne') loadSuzanne();
       handleClear();
     }
-    
-    // Reset overlays
     setOverlays([]);
-    
     setCurrentProjectId(null);
     setIsDashboard(false);
-    
-    // Reset status after a short delay
-    setTimeout(() => {
-      setIsLoading(false);
-    }, 500);
+    setTimeout(() => setIsLoading(false), 500);
   };
 
-  const handleLoadProject = (project: SavedProject) => {
+  const handleLoadProject = async (project: SavedProject) => {
     setIsLoading(true);
     setLoadingProgress(0);
+    setLoadingStatus('Restaurando modelo...');
+    if (project.modelData && project.modelFormat) {
+      const success = await loadModelFromData(project.modelData, project.modelFormat, project.modelName);
+      if (success) {
+        setModelData(project.modelData);
+        setModelFormat(project.modelFormat);
+      }
+    } else if (project.modelName === 'Suzanne') {
+      loadSuzanne();
+    }
     setModelName(project.modelName);
     setBrushSettings(project.brushSettings);
     setCurrentProjectId(project.id);
     initialLayersToLoadRef.current = project.layersData;
     setIsDashboard(false);
     toast.success('Projeto carregado!');
+    clearLoadingOverlay(800);
   };
 
   return (
     <div className="h-screen bg-[#09090b] text-zinc-100 flex flex-col font-sans">
-      <LoadingOverlay show={isLoading} progress={loadingProgress} status={loadingStatus} />
+      <LoadingOverlay 
+        show={isLoading} 
+        progress={loadingProgress} 
+        status={loadingStatus} 
+        transparent={loadingStatus === 'Salvando...'} 
+      />
       <Toaster position="top-right" theme="dark" />
       
       {isDashboard ? (
@@ -534,191 +504,173 @@ function App() {
       ) : (
         <>
           <TopHeader
-        setIsDashboard={setIsDashboard}
-        modelName={modelName}
-        setModelName={setModelName}
-        handleObjUpload={handleObjUpload}
-        showWireframe={showWireframe}
-        setShowWireframe={setShowWireframe}
-        flatShading={flatShading}
-        setFlatShading={setFlatShading}
-        modelParts={modelParts}
-        handleTogglePartVisibility={handleTogglePartVisibility}
-        modelTransform={modelTransform}
-        handleUpdateTransform={handleUpdateTransform}
-        currentTexture={currentTexture}
-        previewCanvas={previewCanvas}
-        handleExport={handleExport}
-        handleClear={handleClear}
-        handleImport={handleImport}
-        textureResolution={textureResolution}
-        setTextureResolution={setTextureResolution}
-        handleSaveProject={handleSaveProject}
-        showUVPanel={showUVPanel}
-        setShowUVPanel={setShowUVPanel}
-        handleFill={handleFill}
-        brushSettings={brushSettings}
-        setBrushSettings={setBrushSettings}
-        matcapName={matcapName}
-        setMatcapName={handleMatcapChange}
-        lastMatcap={lastMatcap}
-        lightSetup={lightSetup}
-        setLightSetup={setLightSetup}
-        lightIntensity={lightIntensity}
-        setLightIntensity={setLightIntensity}
-        showGrid={showGrid}
-        setShowGrid={setShowGrid}
-        focalLength={focalLength}
-        setFocalLength={setFocalLength}
-        envIntensity={envIntensity}
-        setEnvIntensity={setEnvIntensity}
-        objectColor={objectColor}
-        setObjectColor={setObjectColor}
-        colorHistory={colorHistory}
-        layerControls={layerControls}
-        saoEnabled={saoEnabled}
-        onSaoEnabledChange={setSaoEnabled}
-        saoIntensity={saoIntensity}
-        onSaoIntensityChange={setSaoIntensity}
-        saoScale={saoScale}
-        onSaoScaleChange={setSaoScale}
-        bumpScale={bumpScale}
-        onBumpScaleChange={setBumpScale}
-        pbrMode={pbrMode}
-        onPbrModeChange={handlePbrModeChange}
-        onUVUnwrap={handleUVUnwrap}
-      />
-
-      <div className="flex-1 flex overflow-hidden bg-[#09090b]">
-
-        <main className="flex-1 relative flex min-w-0 overflow-hidden">
-          {/* Vertical Shortcut Bar */}
-          <LeftShortcutBar 
+            setIsDashboard={setIsDashboard}
+            modelName={modelName}
+            setModelName={setModelName}
+            handleObjUpload={handleObjUpload}
+            showWireframe={showWireframe}
+            setShowWireframe={setShowWireframe}
+            flatShading={flatShading}
+            setFlatShading={setFlatShading}
+            modelParts={modelParts}
+            handleTogglePartVisibility={handleTogglePartVisibility}
+            modelTransform={modelTransform}
+            handleUpdateTransform={handleUpdateTransform}
+            previewCanvas={previewCanvas}
+            handleExport={handleExport}
+            handleClear={handleClear}
+            textureResolution={textureResolution}
+            setTextureResolution={setTextureResolution}
+            handleSaveProject={handleSaveProject}
+            showUVPanel={showUVPanel}
+            setShowUVPanel={setShowUVPanel}
+            handleFill={handleFill}
             brushSettings={brushSettings}
             setBrushSettings={setBrushSettings}
-            layerControls={layerControls}
-            isMaskEditing={isMaskEditing}
-            setIsMaskEditing={setIsMaskEditing}
-            primaryColor={primaryColor}
-            setPrimaryColor={setPrimaryColor}
-            secondaryColor={secondaryColor}
-            setSecondaryColor={setSecondaryColor}
+            matcapName={matcapName}
+            setMatcapName={handleMatcapChange}
+            lastMatcap={lastMatcap}
+            lightSetup={lightSetup}
+            setLightSetup={setLightSetup}
+            lightIntensity={lightIntensity}
+            setLightIntensity={setLightIntensity}
+            showGrid={showGrid}
+            setShowGrid={setShowGrid}
+            focalLength={focalLength}
+            setFocalLength={setFocalLength}
+            envIntensity={envIntensity}
+            setEnvIntensity={setEnvIntensity}
+            objectColor={objectColor}
+            setObjectColor={setObjectColor}
             colorHistory={colorHistory}
+            layerControls={layerControls}
+            saoEnabled={saoEnabled}
+            onSaoEnabledChange={setSaoEnabled}
+            saoIntensity={saoIntensity}
+            onSaoIntensityChange={setSaoIntensity}
+            saoScale={saoScale}
+            onSaoScaleChange={setSaoScale}
+            bumpScale={bumpScale}
+            onBumpScaleChange={setBumpScale}
+            pbrMode={pbrMode}
+            onPbrModeChange={handlePbrModeChange}
+            onUVUnwrap={handleUVUnwrap}
           />
 
-          <div className="flex-1 relative flex min-w-0 overflow-hidden" ref={containerRef}>
-            <ToolOptionsBar 
-              brushSettings={brushSettings}
-              setBrushSettings={setBrushSettings}
-              gradientSession={gradientSession}
-              setGradientSession={setGradientSession}
-            />
-
-            {/* 3D Scene panel */}
-            <div
-              className="flex-1 relative h-full overflow-hidden min-w-0"
-              style={{ display: 'flex', flexDirection: 'column' }}
-            >
-              {/* OVERLAYS UI (DOM Level) - Moved here to align with viewport */}
-              <OverlayManager 
-                overlays={overlays}
-                onAdd={handleAddOverlay}
-                onUpdate={handleUpdateOverlay}
-                onRemove={handleRemoveOverlay}
-              />
-
-              <Scene3D
+          <div className="flex-1 flex overflow-hidden bg-[#09090b]">
+            <main className="flex-1 relative flex min-w-0 overflow-hidden">
+              <LeftShortcutBar 
                 brushSettings={brushSettings}
-                modelParts={modelParts}
-                modelTransform={modelTransform}
-                showGrid={showGrid}
-                showWireframe={showWireframe}
-                flatShading={flatShading}
-                textureResolution={textureResolution}
-                matcapName={matcapName}
-                lightSetup={lightSetup}
-                lightIntensity={lightIntensity}
-                focalLength={focalLength}
-                envIntensity={envIntensity}
-                objectColor={objectColor}
-                roughness={roughness}
-                metalness={metalness}
-                onTextureChange={handleTextureChange}
-                onLayerControlsReady={handleLayerControlsReady}
-                onColorPainted={handleColorPainted}
-                activeStencil={overlays.find(o => o.type === 'stencil' && o.visible)}
-                gradientSession={gradientSession}
-                setGradientSession={setGradientSession}
-                onLoadingProgress={(prog, status) => {
-                  if (isUnwrapping) return; 
-                  
-                  // Only update if progress is moving forward or if starting a new load (prog=0)
-                  setLoadingProgress(prev => {
-                    if (prog === 0) return 0;
-                    return Math.max(prev, prog);
-                  });
-
-                  if (status) setLoadingStatus(status);
-                  if (prog >= 100) {
-                    clearLoadingOverlay(800);
-                  }
-                }}
-                isModelVisible={!isLoading}
-                saoEnabled={saoEnabled}
-                saoIntensity={saoIntensity}
-                saoScale={saoScale}
-                bumpScale={bumpScale}
+                setBrushSettings={setBrushSettings}
+                layerControls={layerControls}
+                isMaskEditing={isMaskEditing}
+                setIsMaskEditing={setIsMaskEditing}
+                primaryColor={primaryColor}
+                setPrimaryColor={setPrimaryColor}
+                secondaryColor={secondaryColor}
+                setSecondaryColor={setSecondaryColor}
+                colorHistory={colorHistory}
               />
-            </div>
 
-            {/* Drag divider */}
-            {showUVPanel && (
-              <div
-                className="w-1.5 h-full bg-white/5 hover:bg-white/20 cursor-col-resize flex items-center justify-center z-20 transition-colors"
-                style={{ flexShrink: 0 }}
-                onPointerDown={(e) => {
-                  e.preventDefault();
-                  isDraggingDividerRef.current = true;
-                  const container = containerRef.current;
-                  if (!container) return;
+              <div className="flex-1 relative flex min-w-0 overflow-hidden" ref={containerRef}>
+                <ToolOptionsBar 
+                  brushSettings={brushSettings}
+                  setBrushSettings={setBrushSettings}
+                  gradientSession={gradientSession}
+                  setGradientSession={setGradientSession}
+                />
 
-                  const onMove = (ev: PointerEvent) => {
-                    if (!isDraggingDividerRef.current) return;
-                    const rect = container.getBoundingClientRect();
-                    const rightPct = ((rect.right - ev.clientX) / rect.width) * 100;
-                    setUvPanelWidth(Math.min(70, Math.max(20, rightPct)));
-                  };
+                <div className="flex-1 relative h-full overflow-hidden min-w-0" style={{ display: 'flex', flexDirection: 'column' }}>
+                  <OverlayManager 
+                    overlays={overlays}
+                    onAdd={handleAddOverlay}
+                    onUpdate={handleUpdateOverlay}
+                    onRemove={handleRemoveOverlay}
+                  />
 
-                  const onUp = () => {
-                    isDraggingDividerRef.current = false;
-                    window.removeEventListener('pointermove', onMove);
-                    window.removeEventListener('pointerup', onUp);
-                  };
+                  <Scene3D
+                    brushSettings={brushSettings}
+                    modelParts={modelParts}
+                    modelTransform={modelTransform}
+                    showGrid={showGrid}
+                    showWireframe={showWireframe}
+                    flatShading={flatShading}
+                    textureResolution={textureResolution}
+                    matcapName={matcapName}
+                    lightSetup={lightSetup}
+                    lightIntensity={lightIntensity}
+                    focalLength={focalLength}
+                    envIntensity={envIntensity}
+                    objectColor={objectColor}
+                    roughness={roughness}
+                    metalness={metalness}
+                    onTextureChange={handleTextureChange}
+                    onLayerControlsReady={handleLayerControlsReady}
+                    onColorPainted={handleColorPainted}
+                    activeStencil={overlays.find(o => o.type === 'stencil' && o.visible)}
+                    gradientSession={gradientSession}
+                    setGradientSession={setGradientSession}
+                    onLoadingProgress={(prog, status) => {
+                      if (isUnwrapping) return; 
+                      setLoadingProgress(prev => prog === 0 ? 0 : Math.max(prev, prog));
+                      if (status) setLoadingStatus(status);
+                      if (prog >= 100) clearLoadingOverlay(800);
+                    }}
+                    isModelVisible={!isLoading || loadingStatus === 'Salvando...'}
+                    saoEnabled={saoEnabled}
+                    saoIntensity={saoIntensity}
+                    saoScale={saoScale}
+                    bumpScale={bumpScale}
+                  />
+                </div>
 
-                  window.addEventListener('pointermove', onMove);
-                  window.addEventListener('pointerup', onUp);
-                }}
-              >
-                <div className="w-px h-8 rounded-full bg-white/30" />
+                {showUVPanel && (
+                  <div
+                    className="w-1.5 h-full bg-white/5 hover:bg-white/20 cursor-col-resize flex items-center justify-center z-20 transition-colors"
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      isDraggingDividerRef.current = true;
+                      const container = containerRef.current;
+                      if (!container) return;
+                      const onMove = (ev: PointerEvent) => {
+                        if (!isDraggingDividerRef.current) return;
+                        const rect = container.getBoundingClientRect();
+                        const rightPct = ((rect.right - ev.clientX) / rect.width) * 100;
+                        setUvPanelWidth(Math.min(70, Math.max(20, rightPct)));
+                      };
+                      const onUp = () => {
+                        isDraggingDividerRef.current = false;
+                        window.removeEventListener('pointermove', onMove);
+                        window.removeEventListener('pointerup', onUp);
+                      };
+                      window.addEventListener('pointermove', onMove);
+                      window.addEventListener('pointerup', onUp);
+                    }}
+                  >
+                    <div className="w-px h-8 rounded-full bg-white/30" />
+                  </div>
+                )}
+
+                <div
+                  className="relative h-full bg-[#09090b] min-w-0 overflow-hidden"
+                  style={{ width: `${uvPanelWidth}%`, flexShrink: 0, display: showUVPanel ? 'block' : 'none' }}
+                >
+                  <UVOverlayPanel previewCanvas={previewCanvas} geometries={allGeometries} isVisible={showUVPanel} />
+                </div>
               </div>
-            )}
-
-            {/* UV panel — always mounted, hidden via CSS to avoid rebuild cost on open */}
-            <div
-              className="relative h-full bg-[#09090b] min-w-0 overflow-hidden"
-              style={{
-                width: `${uvPanelWidth}%`,
-                flexShrink: 0,
-                display: showUVPanel ? 'block' : 'none',
-              }}
-            >
-              <UVOverlayPanel texture={currentTexture} previewCanvas={previewCanvas} geometry={modelParts[0]?.geometry || null} />
-            </div>
-            </div>
-          </main>
-        </div>
+            </main>
+          </div>
         </>
       )}
+
+      <ExportModal 
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        projectName={modelName}
+        layers={layerControls?.layers || []}
+        pbrTargets={layerControls?.pbrTargets || {}}
+        exportTarget={layerControls?.exportTarget}
+      />
     </div>
   );
 }

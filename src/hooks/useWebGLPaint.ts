@@ -1,10 +1,10 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 import { useThree } from '@react-three/fiber';
-import { BrushShaderMaterial } from '../components/3d/materials/BrushShaderMaterial';
-import { DilationShaderMaterial } from '../components/3d/materials/DilationShaderMaterial';
-import { CompositeShaderMaterial } from '../components/3d/materials/CompositeShaderMaterial';
-import { GradientShaderMaterial } from '../components/3d/materials/GradientShaderMaterial';
+import { BrushShaderMaterial } from '@/components/3d/materials/BrushShaderMaterial';
+import { DilationShaderMaterial } from '@/components/3d/materials/DilationShaderMaterial';
+import { CompositeShaderMaterial } from '@/components/3d/materials/CompositeShaderMaterial';
+import { GradientShaderMaterial } from '@/components/3d/materials/GradientShaderMaterial';
 import type { OverlayData } from '../components/ui-custom/OverlayManager';
 
 export interface BrushSettings {
@@ -40,6 +40,7 @@ export interface BrushSettings {
   usePressureOpacity?: boolean;
   pressureCurve?: number; // 0.5 = soft, 1.0 = linear, 2.0 = firm
   performanceMode?: boolean;
+  projectFromCamera?: boolean;
 };
 
 export type StrokePoint = {
@@ -115,7 +116,11 @@ export function useWebGLPaint(
     decalMesh: new THREE.Mesh(new THREE.PlaneGeometry(2, 2)), // NDC quad
     brushMaterial: new BrushShaderMaterial(),
     uvMaskMaterial: new THREE.ShaderMaterial({
-      vertexShader: `void main() { gl_Position = vec4(uv.x * 2.0 - 1.0, uv.y * 2.0 - 1.0, 0.0, 1.0); }`,
+      vertexShader: `void main() { 
+        // Support tiled UVs (coords outside 0-1) by wrapping with fract
+        vec2 wrappedUv = fract(uv);
+        gl_Position = vec4(wrappedUv.x * 2.0 - 1.0, wrappedUv.y * 2.0 - 1.0, 0.0, 1.0); 
+      }`,
       fragmentShader: `void main() { gl_FragColor = vec4(1.0); }`,
       side: THREE.DoubleSide,
       depthTest: false,
@@ -144,6 +149,8 @@ export function useWebGLPaint(
     // Stencil State
     stencilTexture: null as THREE.Texture | null,
     stencilMatrix: new THREE.Matrix3(),
+    vpMatrix: new THREE.Matrix4(),
+    blitMaterial: new THREE.MeshBasicMaterial({ transparent: true, blending: THREE.NoBlending }),
 
     // Blur / Smudge State
     snapshotTarget: null as THREE.WebGLRenderTarget | null,
@@ -155,6 +162,16 @@ export function useWebGLPaint(
     targetPool: [] as THREE.WebGLRenderTarget[],
     lastLazyNormal: new THREE.Vector3(0, 0, 1),
     lastLazyUV: new THREE.Vector2(),
+    breakStroke: false,
+
+    // Performance Optimization: Filtered Geometry for high-poly models
+    filteredGeometry: new THREE.BufferGeometry(),
+    filteredIndexBuffer: new Uint32Array(1000000), // Max ~333k triangles per stamp
+    invMatrix: new THREE.Matrix4(),
+    localBrushPos: new THREE.Vector3(),
+    tempScale: new THREE.Vector3(),
+    localSphere: new THREE.Sphere(),
+    tempPoint: new THREE.Vector3(),
   });
 
   const undoStackRef = useRef<{ layerId: string; target: THREE.WebGLRenderTarget, isMask: boolean }[]>([]);
@@ -208,20 +225,13 @@ export function useWebGLPaint(
       renderer.setClearColor(0x000000, 0);
       renderer.clear();
       
-      const mat = new THREE.MeshBasicMaterial({ 
-        map: oldTarget.texture, 
-        transparent: true, 
-        depthTest: false, 
-        depthWrite: false, 
-        blending: THREE.NoBlending 
-      });
+      state.blitMaterial.map = oldTarget.texture;
       
       // Use the composite quad to render
       const oldMat = state.compositeQuad.material;
-      state.compositeQuad.material = mat;
+      state.compositeQuad.material = state.blitMaterial;
       renderer.render(state.compositeScene, state.compositeCamera);
       state.compositeQuad.material = oldMat;
-      mat.dispose();
       
       renderer.setRenderTarget(currentRT);
       oldTarget.dispose();
@@ -399,9 +409,17 @@ export function useWebGLPaint(
   }, [gl]); // activeLayerId removed from deps as we now ALWAYS set it, layers length checked via ref
 
   // Sync ref to state
-  useEffect(() => {
-    stateRef.current.layers = layers;
-  }, [layers]);
+    useEffect(() => {
+        stateRef.current.layers = layers;
+    }, [layers]);
+
+    // Performance Update: Initialize persistent index buffer for filtering
+    useEffect(() => {
+        const state = stateRef.current;
+        const indexAttr = new THREE.BufferAttribute(state.filteredIndexBuffer, 1);
+        indexAttr.usage = THREE.DynamicDrawUsage;
+        state.filteredGeometry.setIndex(indexAttr);
+    }, []);
 
   // ---- Painting Logic ----
   const saveUndoStateManual = useCallback((layerId: string, target: THREE.WebGLRenderTarget, isMask: boolean) => {
@@ -485,110 +503,16 @@ export function useWebGLPaint(
     if (activeStencil && activeStencil.imageUrl) {
       if (activeStencil.applyMode === 'invert') stencilMode = 1;
       else if (activeStencil.applyMode === 'luminance') stencilMode = 2;
-      // 1. Load Stencil Texture (cached)
-      if (!state.textureCache.has(activeStencil.imageUrl)) {
-          // Attempt to grab from DOM for synchronous load (prevents dropped first click)
-          const imgEl = document.getElementById(`overlay-img-${activeStencil.id}`) as HTMLImageElement;
-          if (imgEl && imgEl.complete && imgEl.naturalWidth > 0) {
-              const tex = new THREE.Texture(imgEl);
-              tex.minFilter = THREE.LinearFilter;
-              tex.magFilter = THREE.LinearFilter;
-              tex.needsUpdate = true;
-              state.textureCache.set(activeStencil.imageUrl, tex);
-          } else {
-              // Preemptively set to avoid spamming the loader in requestAnimationFrame
-              state.textureCache.set(activeStencil.imageUrl, undefined as any);
-              new THREE.TextureLoader().load(activeStencil.imageUrl, (t) => {
-                  t.minFilter = THREE.LinearFilter;
-                  t.magFilter = THREE.LinearFilter;
-                  state.textureCache.set(activeStencil.imageUrl, t);
-              });
-          }
-      }
-      stencilTex = state.textureCache.get(activeStencil.imageUrl) || null;
-      if (!stencilTex) return; // Prevent painting before stencil is loaded
       
-      // 2. Compute Inverse Transform Matrix
-      // The DOM overlay transforms the image relative to its center point.
-      // We need to map WebGL gl_FragCoord (0..width, 0..height) back to UV space (0..1, 0..1)
-      if (stencilTex && stencilTex.image) {
-          const img = stencilTex.image as HTMLImageElement;
-          // Calculate rendered dimensions based on "object-contain" constraints
-          // The overlay uses max-width/max-height, so we need to infer the actual rendered box
-          let w = img.width;
-          let h = img.height;
-          const maxW = window.innerWidth * 0.7;
-          const maxH = window.innerHeight * 0.7;
-          if (w > maxW || h > maxH) {
-             const scaleDown = Math.min(maxW / w, maxH / h);
-             w *= scaleDown;
-             h *= scaleDown;
-          }
-          w *= activeStencil.scale;
-          h *= activeStencil.scale;
-           
-          // Create 3x3 Transformation Matrix mapping Screen UV (0..1) to Stencil UV (0..1)
-          const m = state.stencilMatrix;
-          
-          const rect = gl.domElement.getBoundingClientRect();
-          const canvasW = rect.width;
-          const canvasH = rect.height;
-
-          // Target logic: stencilUV = CenterToUV * ScaleInv * RotateInv * TranslateInv * ScreenPixels
-          
-          // 1. Convert Screen UV (WebGL: y=0 at bottom) to Screen Pixels (DOM: y=0 at top)
-          const toPixels = new THREE.Matrix3().set(
-            canvasW, 0, 0,
-            0, -canvasH, canvasH,
-            0, 0, 1
-          );
-          
-          // 2. Translate from screen origin to Stencil center
-          const trInv = new THREE.Matrix3().set(
-            1, 0, -activeStencil.x,
-            0, 1, -activeStencil.y,
-            0, 0, 1
-          );
-
-          // 3. Inverse Rotation (Clockwise in DOM -> Negate angle)
-          const angleRad = activeStencil.rotation * (Math.PI / 180);
-          const c = Math.cos(-angleRad);
-          const s = Math.sin(-angleRad);
-          // Inverse of CW rotation is CCW rotation
-          const rotInv = new THREE.Matrix3().set(
-            c, -s, 0,
-            s,  c, 0,
-            0,  0, 1
-          );
-
-          // 4. Inverse Scale (to normalize dimensions)
-          const scaleInv = new THREE.Matrix3().set(
-            1/w, 0, 0,
-            0, 1/h, 0,
-            0, 0, 1
-          );
-
-          // 5. Convert from normalized local [-0.5, 0.5] to UV [0, 1]
-          // Reminder: DOM local y goes down, but WebGL UV y goes up
-          const toUV = new THREE.Matrix3().set(
-            1,  0, 0.5,
-            0, -1, 0.5,
-            0,  0, 1
-          );
-
-          m.identity();
-          m.multiply(toUV);
-          m.multiply(scaleInv);
-          m.multiply(rotInv);
-          m.multiply(trInv);
-          m.multiply(toPixels);
-          
-          stencilMat = m;
-      }
+      stencilTex = state.textureCache.get(activeStencil.imageUrl) || null;
+      if (!stencilTex) return; 
+      
+      // Use pre-calculated matrix from startPainting/paint
+      stencilMat = state.stencilMatrix;
     }
 
-    // View-Projection Matrix
-    const vpMatrix = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    // Use pre-calculated View-Projection Matrix
+    const vpMatrix = state.vpMatrix;
 
     const smudgeDisplacement = new THREE.Vector2().subVectors(uv, state.lastHitUV).multiplyScalar(1.5);
 
@@ -608,6 +532,7 @@ export function useWebGLPaint(
         vpMatrix,
         stencilMode,
         camera.position,
+        brushSettings.projectFromCamera || false,
         mode as any,
         state.snapshotTarget?.texture || null,
         smudgeDisplacement,
@@ -624,23 +549,78 @@ export function useWebGLPaint(
       const targetRT = (activeLayer.isEditingMask && activeLayer.maskTarget) ? activeLayer.maskTarget : activeLayer.target;
       gl.setRenderTarget(targetRT);
 
-      const renderDecal = () => {
+      const renderDecal = (brushPos: THREE.Vector3, brushRadius: number) => {
         if (groupRef.current) {
           groupRef.current.traverse((child) => {
             if (child instanceof THREE.Mesh && child.visible) {
-              state.decalMesh.geometry = child.geometry;
-              child.matrixWorld.decompose(
-                state.decalMesh.position,
-                state.decalMesh.quaternion,
-                state.decalMesh.scale
-              );
-              gl.render(state.decalScene, state.decalCamera);
+              const geom = child.geometry as any;
+              const bvh = geom.boundsTree;
+
+              if (bvh) {
+                // 1. Convert Brush Sphere to Local Space
+                state.invMatrix.copy(child.matrixWorld).invert();
+                state.localBrushPos.copy(brushPos).applyMatrix4(state.invMatrix);
+                
+                child.matrixWorld.decompose(new THREE.Vector3(), new THREE.Quaternion(), state.tempScale);
+                const maxScale = Math.max(Math.abs(state.tempScale.x), Math.abs(state.tempScale.y), Math.abs(state.tempScale.z));
+                const localRadius = brushRadius / maxScale;
+
+                state.localSphere.set(state.localBrushPos, localRadius * 1.5);
+                
+                let count = 0;
+                const index = geom.index;
+                const filteredIndex = state.filteredIndexBuffer;
+
+                bvh.shapecast({
+                  intersectsBounds: (box: THREE.Box3) => state.localSphere.intersectsBox(box),
+                  intersectsTriangle: (tri: THREE.Triangle, triIndex: number) => {
+                    tri.closestPointToPoint(state.localSphere.center, state.tempPoint);
+                    if (state.tempPoint.distanceToSquared(state.localSphere.center) <= state.localSphere.radius * state.localSphere.radius) {
+                      const i3 = triIndex * 3;
+                      filteredIndex[count++] = index.getX(i3);
+                      filteredIndex[count++] = index.getX(i3 + 1);
+                      filteredIndex[count++] = index.getX(i3 + 2);
+                      return count >= 999900; // Buffer guard (1M limit)
+                    }
+                    return false;
+                  }
+                });
+
+                if (count > 0) {
+                    const idxAttr = state.filteredGeometry.getIndex()!;
+                    idxAttr.clearUpdateRanges();
+                    idxAttr.addUpdateRange(0, count);
+                    idxAttr.needsUpdate = true;
+
+                    state.filteredGeometry.setAttribute('position', geom.getAttribute('position'));
+                    state.filteredGeometry.setAttribute('normal', geom.getAttribute('normal'));
+                    state.filteredGeometry.setAttribute('uv', geom.getAttribute('uv'));
+                    state.filteredGeometry.setDrawRange(0, count);
+                    
+                    (state.decalMesh as any).geometry = state.filteredGeometry;
+                    child.matrixWorld.decompose(
+                      state.decalMesh.position,
+                      state.decalMesh.quaternion,
+                      state.decalMesh.scale
+                    );
+                    gl.render(state.decalScene, state.decalCamera);
+                }
+              } else {
+                // Fallback to full geometry
+                state.decalMesh.geometry = child.geometry;
+                child.matrixWorld.decompose(
+                  state.decalMesh.position,
+                  state.decalMesh.quaternion,
+                  state.decalMesh.scale
+                );
+                gl.render(state.decalScene, state.decalCamera);
+              }
             }
           });
         }
       };
 
-      renderDecal();
+      renderDecal(worldPos, worldRadius);
 
       // Advanced Symmetry
       if (brushSettings.symmetryMode && brushSettings.symmetryMode !== 'none') {
@@ -678,6 +658,7 @@ export function useWebGLPaint(
             vpMatrix,
             stencilMode,
             camera.position,
+            brushSettings.projectFromCamera || false,
             mode as any,
             state.snapshotTarget?.texture || null,
             smudgeDisplacement,
@@ -685,7 +666,7 @@ export function useWebGLPaint(
             state.textureSize,
             smudgeStrength !== undefined ? smudgeStrength : 1.0
           );
-          renderDecal();
+          renderDecal(mirroredPos, worldRadius);
         } 
         else if (symMode === 'radial' && groupRef.current) {
           const points = brushSettings.radialPoints || 4;
@@ -748,6 +729,7 @@ export function useWebGLPaint(
               vpMatrix,
               stencilMode,
               camera.position,
+              brushSettings.projectFromCamera || false,
               mode as any,
               state.snapshotTarget?.texture || null,
               smudgeDisplacement,
@@ -755,7 +737,7 @@ export function useWebGLPaint(
               state.textureSize,
               smudgeStrength !== undefined ? smudgeStrength : 1.0
             );
-            renderDecal();
+            renderDecal(radialPos, worldRadius);
           }
         }
       }
@@ -766,10 +748,48 @@ export function useWebGLPaint(
     }
   }, [brushSettings, gl, activeStencil, camera, canvasSize.height, groupRef, markChannelDirty]);
 
-  const startPainting = useCallback((intersection: THREE.Intersection, pressure: number = 1.0) => {
+  const startPainting = useCallback((intersection: THREE.Intersection, pressure: number) => {
     const state = stateRef.current;
     if (!groupRef.current) return;
-    
+    if (!intersection) return;
+
+    // --- OPTIMIZATION: Pre-calculate matrices used by all stamps in this frame ---
+    state.vpMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+
+    if (activeStencil && activeStencil.imageUrl) {
+      const stencilTex = state.textureCache.get(activeStencil.imageUrl);
+      if (stencilTex && stencilTex.image) {
+          const img = stencilTex.image as HTMLImageElement;
+          let w = img.width;
+          let h = img.height;
+          const maxW = window.innerWidth * 0.7;
+          const maxH = window.innerHeight * 0.7;
+          if (w > maxW || h > maxH) {
+             const scaleDown = Math.min(maxW / w, maxH / h);
+             w *= scaleDown;
+             h *= scaleDown;
+          }
+          w *= activeStencil.scale;
+          h *= activeStencil.scale;
+           
+          const m = state.stencilMatrix;
+          const rect = gl.domElement.getBoundingClientRect();
+          const canvasW = rect.width;
+          const canvasH = rect.height;
+
+          const toPixels = new THREE.Matrix3().set(canvasW, 0, 0, 0, -canvasH, canvasH, 0, 0, 1);
+          const trInv = new THREE.Matrix3().set(1, 0, -activeStencil.x, 0, 1, -activeStencil.y, 0, 0, 1);
+          const angleRad = activeStencil.rotation * (Math.PI / 180);
+          const c = Math.cos(-angleRad);
+          const s = Math.sin(-angleRad);
+          const rotInv = new THREE.Matrix3().set(c, -s, 0, s, c, 0, 0, 0, 1);
+          const scaleInv = new THREE.Matrix3().set(1/w, 0, 0, 0, 1/h, 0, 0, 0, 1);
+          const toUV = new THREE.Matrix3().set(1, 0, 0.5, 0, -1, 0.5, 0, 0, 1);
+
+          m.identity().multiply(toUV).multiply(scaleInv).multiply(rotInv).multiply(trInv).multiply(toPixels);
+      }
+    }
+
     state.isPainting = true;
     const { mode } = brushSettings;
     
@@ -794,8 +814,17 @@ export function useWebGLPaint(
     
     const activeLayer = getActiveLayer();
     if (activeLayer) {
-      const normal = intersection.face?.normal.clone() || new THREE.Vector3(0, 0, 1);
-      if (intersection.object) normal.transformDirection(intersection.object.matrixWorld).normalize();
+      let normal = intersection.face?.normal.clone() || new THREE.Vector3(0, 0, 1);
+      if (brushSettings.projectFromCamera) {
+          camera.getWorldDirection(normal).negate();
+      } else if (intersection.object) {
+          normal.transformDirection(intersection.object.matrixWorld).normalize();
+      }
+      
+      if (brushSettings.projectFromCamera) {
+          // Use camera forward direction as the projection normal
+          camera.getWorldDirection(normal).negate();
+      }
       
       let angle = brushSettings.type === 'texture' ? Math.random() * Math.PI * 2 : 0;
       if (brushSettings.jitterAngle) angle = Math.random() * Math.PI * 2;
@@ -825,11 +854,8 @@ export function useWebGLPaint(
                   );
                   state.compositeQuad.material = state.dilationMaterial;
               } else {
-                  const mat = new THREE.MeshBasicMaterial({ 
-                    map: activeLayer.target!.texture, 
-                    depthTest: false, depthWrite: false, transparent: true, blending: THREE.NoBlending 
-                  });
-                  state.compositeQuad.material = mat;
+                  state.blitMaterial.map = activeLayer.target!.texture;
+                  state.compositeQuad.material = state.blitMaterial;
               }
               
               renderer.render(state.compositeScene, state.compositeCamera);
@@ -860,12 +886,78 @@ export function useWebGLPaint(
 
   const paint = useCallback((intersection: THREE.Intersection, targetPressure: number = 1.0) => {
     const state = stateRef.current;
-    if (!state.isPainting || !intersection) return;
+    if (!state.isPainting || !intersection) {
+      if (!intersection && state.isPainting) {
+        state.breakStroke = true;
+      }
+      return;
+    }
 
     const activeLayer = getActiveLayer();
     if (!activeLayer) return;
 
+    // --- OPTIMIZATION: Pre-calculate matrices used by all stamps in this frame ---
+    state.vpMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+
+    if (activeStencil && activeStencil.imageUrl) {
+      const stencilTex = state.textureCache.get(activeStencil.imageUrl);
+      if (stencilTex && stencilTex.image) {
+          const img = stencilTex.image as HTMLImageElement;
+          let w = img.width;
+          let h = img.height;
+          const maxW = window.innerWidth * 0.7;
+          const maxH = window.innerHeight * 0.7;
+          if (w > maxW || h > maxH) {
+             const scaleDown = Math.min(maxW / w, maxH / h);
+             w *= scaleDown;
+             h *= scaleDown;
+          }
+          w *= activeStencil.scale;
+          h *= activeStencil.scale;
+           
+          const m = state.stencilMatrix;
+          const rect = gl.domElement.getBoundingClientRect();
+          const canvasW = rect.width;
+          const canvasH = rect.height;
+
+          const toPixels = new THREE.Matrix3().set(canvasW, 0, 0, 0, -canvasH, canvasH, 0, 0, 1);
+          const trInv = new THREE.Matrix3().set(1, 0, -activeStencil.x, 0, 1, -activeStencil.y, 0, 0, 1);
+          const angleRad = activeStencil.rotation * (Math.PI / 180);
+          const c = Math.cos(-angleRad);
+          const s = Math.sin(-angleRad);
+          const rotInv = new THREE.Matrix3().set(c, -s, 0, s, c, 0, 0, 0, 1);
+          const scaleInv = new THREE.Matrix3().set(1/w, 0, 0, 0, 1/h, 0, 0, 0, 1);
+          const toUV = new THREE.Matrix3().set(1, 0, 0.5, 0, -1, 0.5, 0, 0, 1);
+
+          m.identity().multiply(toUV).multiply(scaleInv).multiply(rotInv).multiply(trInv).multiply(toPixels);
+      }
+    }
+
     let targetUV = intersection.uv?.clone() || new THREE.Vector2();
+    let currentPoint = intersection.point;
+
+    if (state.breakStroke) {
+      state.lastHitPoint.copy(currentPoint);
+      state.lastHitUV.copy(targetUV);
+      state.breakStroke = false;
+      // Also reset lazy point if active
+      if (brushSettings.lazyMouse) {
+        state.lazyPoint.copy(currentPoint);
+        state.hasLazyPoint = true;
+      }
+      // Draw first stamp of new segment
+      const pressure = targetPressure;
+      const sPressure = brushSettings.usePressureSize ? pressure : 1.0;
+      const oPressure = brushSettings.usePressureOpacity ? pressure : 1.0;
+      let normal = intersection.face?.normal.clone() || new THREE.Vector3(0, 0, 1);
+      if (brushSettings.projectFromCamera) {
+          camera.getWorldDirection(normal).negate();
+      } else if (intersection.object) {
+          normal.transformDirection(intersection.object.matrixWorld).normalize();
+      }
+      drawStamp(currentPoint, activeLayer, sPressure, oPressure, normal, 0, targetUV);
+      return;
+    }
 
     // Update stroke bounding box (cumulative for the whole stroke)
     state.strokeBBox.minX = Math.min(state.strokeBBox.minX, targetUV.x);
@@ -879,7 +971,6 @@ export function useWebGLPaint(
     state.frameStrokeBBox.minY = Math.min(state.frameStrokeBBox.minY, targetUV.y);
     state.frameStrokeBBox.maxY = Math.max(state.frameStrokeBBox.maxY, targetUV.y);
 
-    let currentPoint = intersection.point;
     let currentNormal = intersection.face?.normal.clone() || new THREE.Vector3(0, 0, 1);
     if (intersection.object) currentNormal.transformDirection(intersection.object.matrixWorld).normalize();
 
@@ -977,7 +1068,10 @@ export function useWebGLPaint(
               const hitNormal = hit.face.normal.clone();
               if (hit.object) hitNormal.transformDirection(hit.object.matrixWorld).normalize();
               // Smoothly blend the normal to avoid sharp jumps at seams
-              lerpNormal.lerp(hitNormal, 0.4).normalize();
+              // Increased lerp factor and added a check for abrupt changes
+              const dot = lerpNormal.dot(hitNormal);
+              const lerpAmount = dot < 0.5 ? 0.15 : 0.4; // Slower transition for sharp turns
+              lerpNormal.lerp(hitNormal, lerpAmount).normalize();
             }
             if (hit.uv) lerpUV.copy(hit.uv);
           } else {
@@ -1037,7 +1131,12 @@ export function useWebGLPaint(
          finalOpacityPressure *= (1.0 - Math.random() * brushSettings.jitterOpacity);
        }
        
-       drawStamp(lerpPos, activeLayer, sPressure, finalOpacityPressure, lerpNormal, angle, lerpUV);
+       let finalNormal = lerpNormal.clone();
+        if (brushSettings.projectFromCamera) {
+            camera.getWorldDirection(finalNormal).negate();
+        }
+
+        drawStamp(lerpPos, activeLayer, sPressure, finalOpacityPressure, finalNormal, angle, lerpUV);
        state.lastHitUV.copy(lerpUV);
 
        // Accumulate: Update snapshot more frequently for smudge to prevent tearing during fast moves
@@ -1146,6 +1245,9 @@ export function useWebGLPaint(
       const oldMat = state.decalMesh.material;
       state.decalMesh.material = state.uvMaskMaterial;
       
+      const oldAutoClear = gl.autoClear;
+      gl.autoClear = false; // PREVENT CLEARING FOR EACH SUB-MESH
+
       if (groupRef.current) {
         groupRef.current.traverse((child) => {
           if (child instanceof THREE.Mesh && child.visible) {
@@ -1155,6 +1257,7 @@ export function useWebGLPaint(
         });
       }
 
+      gl.autoClear = oldAutoClear;
       state.decalMesh.material = oldMat;
       state.needsUVMaskUpdate = false;
       gl.setRenderTarget(oldRT);
@@ -1244,29 +1347,37 @@ export function useWebGLPaint(
       
       // Run Dilation for this channel
       if (state.uvMaskTarget) {
-          gl.setRenderTarget(targetRT);
-          
           if (state.isPainting) {
-            // LIGHTWEIGHT DILATION DURING ACTIVE STROKE
-            // Use 8px to better cover seams on high-res models
-            const interactiveRadius = 8.0;
+            // LIGHTWEIGHT DILATION DURING ACTIVE STROKE: 1 pass, 4px
+            gl.setRenderTarget(targetRT);
+            const interactiveRadius = 4.0;
             state.dilationMaterial.setMap(currentSrc.texture, (state.uvMaskTarget as THREE.WebGLRenderTarget).texture, state.textureSize, state.textureSize, interactiveRadius);
             state.compositeQuad.material = state.dilationMaterial;
             gl.render(state.compositeScene, state.compositeCamera);
-          } else {
-            // Run high-quality 24px dilation ONLY on idle frames
-            const currentRadius = 24.0;
+          } else if (state.dilatedTarget) {
+            // HIGH QUALITY MULTI-PASS DILATION WHEN IDLE: 2 passes, 4px + 4px = 8px total
+            // Pass 1: currentSrc -> dilatedTarget
+            gl.setRenderTarget(state.dilatedTarget);
+            gl.clear();
+            const currentRadius = 4.0;
             state.dilationMaterial.setMap(currentSrc.texture, (state.uvMaskTarget as THREE.WebGLRenderTarget).texture, state.textureSize, state.textureSize, currentRadius);
+            state.compositeQuad.material = state.dilationMaterial;
+            gl.render(state.compositeScene, state.compositeCamera);
+            
+            // Pass 2: dilatedTarget -> final Target
+            gl.setRenderTarget(targetRT);
+            gl.clear();
+            // Use the same radius for second pass to expand further
+            state.dilationMaterial.setMap(state.dilatedTarget.texture, (state.uvMaskTarget as THREE.WebGLRenderTarget).texture, state.textureSize, state.textureSize, currentRadius);
             state.compositeQuad.material = state.dilationMaterial;
             gl.render(state.compositeScene, state.compositeCamera);
           }
       } else {
           // Blit directly if no UV mask
           gl.setRenderTarget(targetRT);
-          const blitMat = new THREE.MeshBasicMaterial({ map: currentSrc.texture, transparent: true, blending: THREE.NoBlending });
-          state.compositeQuad.material = blitMat;
+          state.blitMaterial.map = currentSrc.texture;
+          state.compositeQuad.material = state.blitMaterial;
           gl.render(state.compositeScene, state.compositeCamera);
-          blitMat.dispose();
       }
     }
 
@@ -2002,75 +2113,78 @@ export function useWebGLPaint(
     return finalDataUrl;
   }, [gl, layers]);
 
-  const exportProjectLayersData = useCallback(async () => {
-    return new Promise<any[]>((resolve, reject) => {
-      setTimeout(() => {
-        try {
-          const state = stateRef.current;
-          const width = state.textureSize;
-          const height = state.textureSize;
-          const buffer = new Uint8Array(width * height * 4);
-          
-          const exportTarget = (target: THREE.WebGLRenderTarget) => {
-            const oldRT = gl.getRenderTarget();
-            const oldAutoClear = gl.autoClear;
-            const oldClearColor = gl.getClearColor(new THREE.Color());
-            const oldClearAlpha = gl.getClearAlpha();
-            
-            gl.setRenderTarget(target);
-            gl.readRenderTargetPixels(target, 0, 0, width, height, buffer);
-            gl.setRenderTarget(oldRT);
-            gl.autoClear = oldAutoClear;
-            gl.setClearColor(oldClearColor, oldClearAlpha);
+  const exportTarget = useCallback(async (target: THREE.WebGLRenderTarget) => {
+    const { width, height } = target;
+    const buffer = new Uint8Array(width * height * 4);
+    
+    // Ensure all previous drawing is finished
+    gl.getContext().flush(); 
+    
+    const oldRT = gl.getRenderTarget();
+    const oldAutoClear = gl.autoClear;
+    const oldClearColor = gl.getClearColor(new THREE.Color());
+    const oldClearAlpha = gl.getClearAlpha();
+    
+    gl.setRenderTarget(target);
+    gl.readRenderTargetPixels(target, 0, 0, width, height, buffer);
+    gl.setRenderTarget(oldRT);
+    gl.autoClear = oldAutoClear;
+    gl.setClearColor(oldClearColor, oldClearAlpha);
 
-            const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = width;
-            tempCanvas.height = height;
-            const tempCtx = tempCanvas.getContext('2d');
-            
-            const tempFlipCanvas = document.createElement('canvas');
-            tempFlipCanvas.width = width;
-            tempFlipCanvas.height = height;
-            const tempFlipCtx = tempFlipCanvas.getContext('2d');
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = width;
+    tempCanvas.height = height;
+    const tempCtx = tempCanvas.getContext('2d');
+    
+    const tempFlipCanvas = document.createElement('canvas');
+    tempFlipCanvas.width = width;
+    tempFlipCanvas.height = height;
+    const tempFlipCtx = tempFlipCanvas.getContext('2d');
 
-            if (!tempCtx || !tempFlipCtx) return undefined;
+    if (!tempCtx || !tempFlipCtx) return undefined;
 
-            const imgData = new ImageData(new Uint8ClampedArray(buffer), width, height);
-            tempCtx.putImageData(imgData, 0, 0);
+    const imgData = new ImageData(new Uint8ClampedArray(buffer), width, height);
+    tempCtx.putImageData(imgData, 0, 0);
 
-            tempFlipCtx.clearRect(0, 0, width, height);
-            tempFlipCtx.save();
-            tempFlipCtx.translate(0, height);
-            tempFlipCtx.scale(1, -1);
-            tempFlipCtx.drawImage(tempCanvas, 0, 0);
-            tempFlipCtx.restore();
+    tempFlipCtx.clearRect(0, 0, width, height);
+    tempFlipCtx.save();
+    tempFlipCtx.translate(0, height);
+    tempFlipCtx.scale(1, -1);
+    tempFlipCtx.drawImage(tempCanvas, 0, 0);
+    tempFlipCtx.restore();
 
-            return tempFlipCanvas.toDataURL('image/png');
-          };
-
-          const layersData = state.layers.map(l => ({
-            id: l.id,
-            name: l.name,
-            visible: l.visible,
-            opacity: l.opacity,
-            intensity: l.intensity || 1,
-            blendMode: l.blendMode,
-            isFolder: !!l.isFolder,
-            parentId: l.parentId,
-            maskEnabled: l.maskEnabled,
-            mapType: l.mapType,
-            hasMask: !!l.maskTarget,
-            targetBlobUrl: l.target ? exportTarget(l.target) : undefined,
-            maskBlobUrl: l.maskTarget ? exportTarget(l.maskTarget) : undefined
-          }));
-          
-          resolve(layersData);
-        } catch (error) {
-          reject(error);
-        }
-      }, 10);
+    return new Promise<Blob | string>((resolve) => {
+      tempFlipCanvas.toBlob((blob) => {
+        resolve(blob || "");
+      }, 'image/png');
     });
   }, [gl]);
+
+  const exportProjectLayersData = useCallback(async () => {
+    const state = stateRef.current;
+
+
+    const layersWithData = [];
+    for (const l of state.layers) {
+      layersWithData.push({
+        id: l.id,
+        name: l.name,
+        visible: l.visible,
+        opacity: l.opacity,
+        intensity: l.intensity || 1,
+        blendMode: l.blendMode,
+        isFolder: !!l.isFolder,
+        parentId: l.parentId,
+        maskEnabled: l.maskEnabled,
+        mapType: l.mapType,
+        hasMask: !!l.maskTarget,
+        targetBlobUrl: l.target ? await exportTarget(l.target) : undefined,
+        maskBlobUrl: l.maskTarget ? await exportTarget(l.maskTarget) : undefined
+      });
+    }
+    
+    return layersWithData;
+  }, [gl, exportTarget]);
 
   const importProjectLayersData = useCallback(async (layersData: any[], onProgress?: (progress: number) => void) => {
     const state = stateRef.current;
@@ -2111,6 +2225,9 @@ export function useWebGLPaint(
             target = new THREE.WebGLRenderTarget(size, size, targetOpts);
             if (lData.targetBlobUrl) {
                await new Promise<void>((resolve) => {
+                 const isBlob = lData.targetBlobUrl instanceof Blob;
+                 const src = isBlob ? URL.createObjectURL(lData.targetBlobUrl) : lData.targetBlobUrl;
+                 
                  const img = new Image();
                  img.onload = () => {
                     const tempRT = gl.getRenderTarget();
@@ -2148,11 +2265,20 @@ export function useWebGLPaint(
                     gl.setRenderTarget(tempRT);
                     gl.autoClear = oldAutoClear;
                     gl.setClearColor(tempOldClearColor, tempOldClearAlpha);
+                    
+                    if (isBlob) URL.revokeObjectURL(src);
                     completedSteps++;
                     reportProgress();
                     resolve();
                  };
-                 img.src = lData.targetBlobUrl;
+                 img.onerror = () => {
+                    console.error("Failed to load layer image");
+                    if (isBlob) URL.revokeObjectURL(src);
+                    completedSteps++;
+                    reportProgress();
+                    resolve();
+                 };
+                 img.src = src;
                });
             } else {
                gl.setRenderTarget(target);
@@ -2170,6 +2296,9 @@ export function useWebGLPaint(
             maskTarget = new THREE.WebGLRenderTarget(size, size, targetOpts);
             if (lData.maskBlobUrl) {
                 await new Promise<void>((resolve) => {
+                 const isBlob = lData.maskBlobUrl instanceof Blob;
+                 const src = isBlob ? URL.createObjectURL(lData.maskBlobUrl) : lData.maskBlobUrl;
+                 
                  const img = new Image();
                  img.onload = () => {
                     const tempRT = gl.getRenderTarget();
@@ -2207,11 +2336,20 @@ export function useWebGLPaint(
                     gl.setRenderTarget(tempRT);
                     gl.autoClear = oldAutoClear;
                     gl.setClearColor(tempOldClearColor, tempOldClearAlpha);
+                    
+                    if (isBlob) URL.revokeObjectURL(src);
                     completedSteps++;
                     reportProgress();
                     resolve();
                  };
-                 img.src = lData.maskBlobUrl;
+                 img.onerror = () => {
+                    console.error("Failed to load mask image");
+                    if (isBlob) URL.revokeObjectURL(src);
+                    completedSteps++;
+                    reportProgress();
+                    resolve();
+                 };
+                 img.src = src;
                });
             } else {
                gl.setRenderTarget(maskTarget);
@@ -2251,9 +2389,107 @@ export function useWebGLPaint(
         setLayers(newLayers);
         setActiveLayerId(newLayers.find(l => !l.isFolder)?.id || newLayers[0].id);
         state.layers = newLayers;
+        markChannelDirty('all');
         state.needsComposite = true;
+        // Reset stroke box to full on project import
+        state.strokeBBox = { minX: 0, minY: 0, maxX: 1, maxY: 1 };
     }
-  }, [gl, addLayer]);
+  }, [gl, addLayer, markChannelDirty]);
+
+  const importImageToLayer = useCallback(async (file: File) => {
+    const state = stateRef.current;
+    
+    // 1. Create a new layer immediately
+    const newTarget = getTargetFromPool(state.textureSize, state.textureSize);
+    
+    // Clear it
+    const oldRT = gl.getRenderTarget();
+    const oldClearColor = gl.getClearColor(new THREE.Color());
+    const oldClearAlpha = gl.getClearAlpha();
+    gl.setRenderTarget(newTarget);
+    gl.setClearColor(0x000000, 0);
+    gl.clear();
+    gl.setRenderTarget(oldRT);
+    gl.setClearColor(oldClearColor, oldClearAlpha);
+
+    const newLayer: GPULayer = {
+      id: THREE.MathUtils.generateUUID(),
+      name: `Import: ${file.name.split('.')[0]}`,
+      visible: true,
+      opacity: 1,
+      intensity: 1,
+      blendMode: 0, // Normal
+      target: newTarget,
+      mapType: 'albedo', // Default to albedo for imports
+      maskTarget: null,
+      maskEnabled: false,
+      isEditingMask: false,
+    };
+
+    return new Promise<void>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const oldRT = gl.getRenderTarget();
+          const oldAutoClear = gl.autoClear;
+          const oldClearColor = gl.getClearColor(new THREE.Color());
+          const oldClearAlpha = gl.getClearAlpha();
+          gl.autoClear = false;
+
+          gl.setRenderTarget(newLayer.target!);
+          gl.setClearColor(0x000000, 0);
+          gl.clear();
+
+          const tex = new THREE.Texture(img);
+          tex.colorSpace = THREE.SRGBColorSpace;
+          tex.needsUpdate = true;
+          tex.minFilter = THREE.LinearFilter;
+          tex.magFilter = THREE.LinearFilter;
+          tex.flipY = true;
+
+          const oldMatArr = state.compositeQuad.material;
+          state.blitMaterial.map = tex;
+          state.compositeQuad.material = state.blitMaterial;
+          gl.render(state.compositeScene, state.compositeCamera);
+          state.compositeQuad.material = oldMatArr;
+
+          tex.dispose();
+
+          gl.setRenderTarget(oldRT);
+          gl.autoClear = oldAutoClear;
+          gl.setClearColor(oldClearColor, oldClearAlpha);
+
+          // Force full-texture compositor update
+          state.strokeBBox = { minX: 0, minY: 0, maxX: 1, maxY: 1 };
+          
+          setLayers(prev => {
+            const updated = [newLayer, ...prev];
+            state.layers = updated;
+            markChannelDirty(newLayer.mapType);
+            return updated;
+          });
+          setActiveLayerId(newLayer.id);
+          state.needsComposite = true;
+          
+          resolve();
+        };
+        img.onerror = (err) => {
+            console.error("Image load error", err);
+            // Cleanup failed target
+            if (newLayer.target) returnTargetToPool(newLayer.target);
+            reject(err);
+        };
+        img.src = e.target?.result as string;
+      };
+      reader.onerror = (err) => {
+          console.error("File read error", err);
+          if (newLayer.target) returnTargetToPool(newLayer.target);
+          reject(err);
+      };
+      reader.readAsDataURL(file);
+    });
+  }, [gl, getTargetFromPool, returnTargetToPool, markChannelDirty]);
 
   const sampleColor = useCallback((intersection: THREE.Intersection) => {
     const state = stateRef.current;
@@ -2456,7 +2692,10 @@ export function useWebGLPaint(
     toggleLayerMask,
     setEditingMask,
     exportProjectLayersData,
+    exportTarget,
+    pbrTargets: stateRef.current.pbrTargets,
     importProjectLayersData,
+    importImageToLayer,
     mergeLayer,
     mergeFolder,
     renderGradient,
@@ -2464,6 +2703,7 @@ export function useWebGLPaint(
     previewGradient,
     markChannelDirty,
     lazyPoint: stateRef.current.lazyPoint,
+    breakStroke: () => { stateRef.current.breakStroke = true; }
   }), [
     initPaintSystem,
     startPainting,
@@ -2492,7 +2732,9 @@ export function useWebGLPaint(
     toggleLayerMask,
     setEditingMask,
     exportProjectLayersData,
+    exportTarget,
     importProjectLayersData,
+    importImageToLayer,
     mergeLayer,
     mergeFolder,
     renderGradient,

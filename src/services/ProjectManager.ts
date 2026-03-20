@@ -5,8 +5,8 @@ export interface SavedProject {
   name: string;
   lastModified: number;
   modelName: string; // "Suzanne", "Cube", or base filename of custom OBJ
-  // In a real app we would save the OBJ file itself if it's custom, 
-  // but for now we'll just store the string.
+  modelData?: Blob | ArrayBuffer | string;
+  modelFormat?: 'obj' | 'glb' | 'fbx' | 'usdz';
   
   // We'll store the brush settings
   brushSettings: any;
@@ -22,9 +22,9 @@ export interface SavedProject {
     parentId?: string;
     maskEnabled?: boolean;
     hasMask: boolean; // Tells us if there's a mask target to load
-    // Blob URLs or base64 strings for the image textures
-    targetBlobUrl?: string; 
-    maskBlobUrl?: string;
+    // Blobs, Blob URLs or base64 strings for the image textures
+    targetBlobUrl?: Blob | string; 
+    maskBlobUrl?: Blob | string;
   }[];
 }
 

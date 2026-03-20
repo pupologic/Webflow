@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">3DWebPainter</string>
+    <string name="title_activity_main">3DWebPainter</string>
+    <string name="package_name">com.pupologic.webflow</string>
+    <string name="custom_url_scheme">com.pupologic.webflow</string>
+</resources>

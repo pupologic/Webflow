@@ -71,15 +71,15 @@ export class UVUnwrapper {
 
     // Configure standard options
     unwrapper.chartOptions = {
-      fixWinding: false,
+      fixWinding: false, // Standard xatlas-three default (more stable)
       maxBoundaryLength: 0,
       maxChartArea: 0,
       maxCost: 2,
       maxIterations: 1,
       normalDeviationWeight: 2,
-      normalSeamWeight: 4,
+      normalSeamWeight: 4, // Restored stable weight
       roundnessWeight: 0.01,
-      straightnessWeight: 6,
+      straightnessWeight: 6, // Restored stable weight
       textureSeamWeight: 0.5,
       useInputMeshUvs: false,
     };
@@ -100,10 +100,14 @@ export class UVUnwrapper {
     // Unwrap will write to the 'uv' attribute (and move original 'uv' to 'uv2' if it exists)
     await unwrapper.unwrap(indexedGeometry);
     
-    // Ensure the new UV attribute is marked for update
-    if (indexedGeometry.attributes.uv) {
-      indexedGeometry.attributes.uv.needsUpdate = true;
-    }
+    // Recalculate normals as vertex splitting changes the adjacency
+    indexedGeometry.computeVertexNormals();
+
+    // Mark ALL attributes as needing update
+    if (indexedGeometry.index) indexedGeometry.index.needsUpdate = true;
+    Object.values(indexedGeometry.attributes).forEach(attr => {
+      attr.needsUpdate = true;
+    });
 
     return indexedGeometry;
   }
@@ -147,15 +151,26 @@ export class UVUnwrapper {
        texelsPerUnit: 0
     };
 
-    // packAtlas (this is the heavy part)
-    // We can't easily get granular progress from the WASM call itself,
-    // so we step it to 90% after it finishes.
+    // Process each mesh: unwrap (create charts) then pack (into atlas)
+    for (const g of indexedGeometries) {
+        await unwrapper.unwrap(g);
+    }
+
+    if (onProgress) onProgress(70); 
+
+    // Final packing step
     await unwrapper.packAtlas(indexedGeometries, 'uv');
 
     if (onProgress) onProgress(95); 
 
     indexedGeometries.forEach(g => {
-      if (g.attributes.uv) g.attributes.uv.needsUpdate = true;
+      // Recalculate normals after vertex splitting
+      g.computeVertexNormals();
+      
+      if (g.index) g.index.needsUpdate = true;
+      Object.values(g.attributes).forEach(attr => {
+        attr.needsUpdate = true;
+      });
     });
 
     if (onProgress) onProgress(100);

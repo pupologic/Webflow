@@ -1,16 +1,24 @@
 import * as THREE from 'three';
 
 const vertexShader = `
+  uniform mat4 uVPMatrix;
   varying vec3 vWorldPos;
   varying vec3 vNormal;
   varying vec2 vUv;
+  varying vec2 vScreenUV;
+
   void main() {
-    // We apply the mesh's transform to get the true world position
     vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
     vNormal = normalize(mat3(modelMatrix) * normal);
     vUv = uv;
+
+    // Pre-calculate screen UV for stencil/screen projection
+    vec4 projectedPos = uVPMatrix * vec4(vWorldPos, 1.0);
+    vScreenUV = (projectedPos.xy / projectedPos.w) * 0.5 + 0.5;
+
     // Map UV to NDC (Normalized Device Coordinates) [-1, 1]
-    gl_Position = vec4(uv.x * 2.0 - 1.0, uv.y * 2.0 - 1.0, 0.0, 1.0);
+    vec2 wrappedUv = fract(uv);
+    gl_Position = vec4(wrappedUv.x * 2.0 - 1.0, wrappedUv.y * 2.0 - 1.0, 0.0, 1.0);
   }
 `;
 
@@ -38,10 +46,12 @@ const fragmentShader = `
   uniform float uSmudgeStrength;
   uniform vec2 uTexSize;
   uniform vec3 uCameraPos;
+  uniform bool uIsScreenProjected;
   
     varying vec3 vWorldPos;
     varying vec3 vNormal;
     varying vec2 vUv;
+    varying vec2 vScreenUV;
 
     // Rotation matrix for brush randomness/angle
     mat2 rotate2d(float _angle){
@@ -52,21 +62,30 @@ const fragmentShader = `
     void main() {
       float alphaMultiplier = 1.0;
 
-      // 1. Normal Masking: Only paint surfaces facing the brush
+      // 1. Normal/View Masking
+      // When Screen Projecting, we want a very consistent "stamp" feel.
+      // We only fade out if the surface is nearly parallel to the projection 
+      // or completely back-facing.
       float angleFactor = dot(normalize(vNormal), normalize(uBrushNormal));
-      // Soften the cutoff instead of discarding:
-      alphaMultiplier *= smoothstep(0.05, 0.4, angleFactor);
-
-      // 2. View Masking: Only paint surfaces facing the camera
-      vec3 viewDir = normalize(uCameraPos - vWorldPos);
-      float viewFactor = dot(normalize(vNormal), viewDir);
-      // Soften the cutoff instead of discarding:
-      alphaMultiplier *= smoothstep(0.01, 0.2, viewFactor);
+      
+      if (uIsScreenProjected) {
+          // Much more aggressive projection for the "2D stamp" feel
+          // Only discard if truly facing away from the camera
+          alphaMultiplier *= smoothstep(-0.4, 0.1, angleFactor);
+      } else {
+          // Standard surface alignment has a softer falloff
+          alphaMultiplier *= smoothstep(-0.2, 0.3, angleFactor);
+          
+          // 2. View Masking: Only for non-screen-projected brushes
+          vec3 viewDir = normalize(uCameraPos - vWorldPos);
+          float viewFactor = dot(normalize(vNormal), viewDir);
+          alphaMultiplier *= smoothstep(-0.1, 0.2, viewFactor);
+      }
 
       // 3. Depth Masking: Projector volume
       float depthDist = abs(dot(vWorldPos - uBrushPos, normalize(uBrushNormal)));
-      if (depthDist > uRadius * 1.5) discard; // Allow a bit more depth for slanted surfaces
-      float depthAlpha = 1.0 - smoothstep(uRadius * 0.5, uRadius * 1.5, depthDist);
+      if (depthDist > uRadius * 3.0) discard; // increased from 1.5 to 3.0
+      float depthAlpha = 1.0 - smoothstep(uRadius * 0.5, uRadius * 3.0, depthDist);
 
       alphaMultiplier *= depthAlpha;
 
@@ -122,10 +141,7 @@ const fragmentShader = `
 
       // 4. Stencil Masking
       if (uUseStencil) {
-          vec4 projectedPos = uVPMatrix * vec4(vWorldPos, 1.0);
-          vec2 screenPos = projectedPos.xy / projectedPos.w;
-          vec2 screenUV = screenPos * 0.5 + 0.5;
-          vec3 stencilPos = uStencilMatrix * vec3(screenUV, 1.0);
+          vec3 stencilPos = uStencilMatrix * vec3(vScreenUV, 1.0);
           
           if (stencilPos.x >= 0.0 && stencilPos.x <= 1.0 && stencilPos.y >= 0.0 && stencilPos.y <= 1.0) {
               vec4 stencilColor = texture2D(uStencilTexture, vec2(stencilPos.x, stencilPos.y)); 
@@ -194,7 +210,8 @@ export class BrushShaderMaterial extends THREE.ShaderMaterial {
         uBlurStrength: { value: 1.0 },
         uSmudgeStrength: { value: 1.0 },
         uTexSize: { value: new THREE.Vector2(2048, 2048) },
-        uCameraPos: { value: new THREE.Vector3() }
+        uCameraPos: { value: new THREE.Vector3() },
+        uIsScreenProjected: { value: false }
       },
       transparent: true,
       depthTest: false,
@@ -218,6 +235,7 @@ export class BrushShaderMaterial extends THREE.ShaderMaterial {
     vpMatrix: THREE.Matrix4 | null = null,
     stencilMode: number = 0,
     cameraPos: THREE.Vector3 = new THREE.Vector3(),
+    isScreenProjected: boolean = false,
     // New parameters for Blur/Smudge
     mode: 'paint' | 'erase' | 'blur' | 'smudge' = 'paint',
     snapshotTexture: THREE.Texture | null = null,
@@ -228,6 +246,7 @@ export class BrushShaderMaterial extends THREE.ShaderMaterial {
   ) {
     this.uniforms.uColor.value.set(color === 'erase' ? '#000000' : color);
     this.uniforms.uCameraPos.value.copy(cameraPos);
+    this.uniforms.uIsScreenProjected.value = isScreenProjected;
     this.uniforms.uOpacity.value = opacity;
     this.uniforms.uBrushPos.value.copy(worldPos);
     this.uniforms.uRadius.value = radius;

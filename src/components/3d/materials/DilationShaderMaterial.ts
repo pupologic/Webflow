@@ -4,59 +4,60 @@ const vertexShader = `
   varying vec2 vUv;
   void main() {
     vUv = uv;
-    gl_Position = vec4(position, 1.0);
+    gl_Position = vec4(uv.x * 2.0 - 1.0, uv.y * 2.0 - 1.0, 0.0, 1.0);
   }
 `;
 
 const fragmentShader = `
   uniform sampler2D tDiffuse;
-  uniform sampler2D tMask;
-  uniform vec2 uPixelSize;
+  uniform sampler2D tMeshMask;
+  uniform vec2 uTexSize;
   uniform float uRadius;
   varying vec2 vUv;
 
   void main() {
-    vec4 base = texture2D(tDiffuse, vUv);
-    float mask = texture2D(tMask, vUv).r;
-    
-    // If the pixel is INSIDE the UV island, NEVER dilate it.
-    // Just output whatever color is there.
+    vec4 col = texture2D(tDiffuse, vUv);
+    float mask = texture2D(tMeshMask, vUv).r;
+
+    // We only dilate if the mask is low (outside mesh)
     if (mask > 0.5) {
-      gl_FragColor = base;
+      gl_FragColor = col;
       return;
     }
 
-    // Otherwise, we are OUTSIDE the UV island (in the gutter).
-    // Look for the nearest painted neighbor that is INSIDE the UV island.
-    float closestDist = 9999.0;
-    vec4 bestColor = vec4(0.0);
-    int maxRad = int(uRadius);
+    vec2 texelSize = 1.0 / uTexSize;
+    float bestDistSq = 1e10;
+    vec4 bestCol = col;
+    bool found = false;
     
-    for (int y = -32; y <= 32; y+=2) {
-      if (abs(float(y)) > uRadius) continue;
-      for (int x = -32; x <= 32; x+=2) {
-        if (abs(float(x)) > uRadius) continue;
-        if (x == 0 && y == 0) continue;
+    // Jump-flood inspired sampling for efficiency
+    // We sample a sparse grid to find the nearest valid mesh pixel
+    float step = max(1.0, uRadius / 2.0);
+    
+    for (float x = -1.0; x <= 1.0; x += 1.0) {
+      for (float y = -1.0; y <= 1.0; y += 1.0) {
+        if (x == 0.0 && y == 0.0) continue;
         
-        vec2 offset = vec2(float(x), float(y)) * uPixelSize;
-        vec4 samp = texture2D(tDiffuse, vUv + offset);
-        float sampMask = texture2D(tMask, vUv + offset).r;
+        vec2 offset = vec2(x, y) * texelSize * step;
+        vec4 sampleCol = texture2D(tDiffuse, vUv + offset);
+        float sampleMask = texture2D(tMeshMask, vUv + offset).r;
         
-        // Only pull bleed color from painted pixels inside the UV mask
-        if (samp.a > 0.05 && sampMask > 0.5) {
-          float d = float(x*x + y*y);
-          if (d < closestDist) {
-            closestDist = d;
-            bestColor = vec4(samp.rgb, samp.a); 
+        if (sampleMask > 0.5 && sampleCol.a > 0.01) {
+          float d2 = dot(offset, offset);
+          if (d2 < bestDistSq) {
+            bestDistSq = d2;
+            bestCol = sampleCol;
+            found = true;
           }
         }
       }
     }
-    
-    if (bestColor.a > 0.0) {
-      gl_FragColor = bestColor;
+
+    if (found) {
+      gl_FragColor = vec4(bestCol.rgb, bestCol.a);
     } else {
-      gl_FragColor = base;
+      // If nothing found in the sparse grid, keep original (or black)
+      gl_FragColor = col;
     }
   }
 `;
@@ -68,20 +69,21 @@ export class DilationShaderMaterial extends THREE.ShaderMaterial {
       fragmentShader,
       uniforms: {
         tDiffuse: { value: null },
-        tMask: { value: null },
-        uPixelSize: { value: new THREE.Vector2(1/2048, 1/2048) },
-        uRadius: { value: 16.0 },
+        tMeshMask: { value: null },
+        uTexSize: { value: new THREE.Vector2(2048, 2048) },
+        uRadius: { value: 4.0 }
       },
       depthTest: false,
       depthWrite: false,
       transparent: true,
+      blending: THREE.NoBlending
     });
   }
 
-  setMap(map: THREE.Texture, mask: THREE.Texture, width: number, height: number, radius: number = 16.0) {
-    this.uniforms.tDiffuse.value = map;
-    this.uniforms.tMask.value = mask;
-    this.uniforms.uPixelSize.value.set(1 / width, 1 / height);
+  setMap(texture: THREE.Texture, mask: THREE.Texture, width: number, height: number, radius: number = 4.0) {
+    this.uniforms.tDiffuse.value = texture;
+    this.uniforms.tMeshMask.value = mask;
+    this.uniforms.uTexSize.value.set(width, height);
     this.uniforms.uRadius.value = radius;
   }
 }

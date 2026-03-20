@@ -126,13 +126,29 @@ export const BrushStudio: React.FC<BrushStudioProps> = ({
 
           <TabsContent value="dynamics" className="flex-1 p-6 space-y-6 mt-0">
              <div className="space-y-4">
-                <div className="flex items-center justify-between p-3 bg-zinc-900 rounded-lg border border-white/5">
-                  <span className="text-[10px] font-bold text-zinc-400">Follow Stroke Path</span>
+                <div className="flex items-center justify-between p-3 bg-zinc-900 rounded-lg border border-white/5 text-[10px]">
+                  <div className="flex flex-col">
+                    <span className="font-bold text-zinc-400">Follow Stroke Path</span>
+                    <span className="text-[8px] text-zinc-600 uppercase">Orient brush to movement</span>
+                  </div>
                   <button
                     onClick={() => update({ followPath: !brushSettings.followPath })}
                     className={`w-8 h-4 rounded-full relative transition-colors ${brushSettings.followPath ? 'bg-emerald-500' : 'bg-zinc-700'}`}
                   >
                     <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${brushSettings.followPath ? 'left-4.5' : 'left-0.5'}`} />
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between p-3 bg-zinc-900 rounded-lg border border-white/5 text-[10px]">
+                  <div className="flex flex-col">
+                    <span className="font-bold text-zinc-400">Screen Projection</span>
+                    <span className="text-[8px] text-zinc-600 uppercase">Project from Viewport</span>
+                  </div>
+                  <button
+                    onClick={() => update({ projectFromCamera: !brushSettings.projectFromCamera })}
+                    className={`w-8 h-4 rounded-full relative transition-colors ${brushSettings.projectFromCamera ? 'bg-blue-500' : 'bg-zinc-700'}`}
+                  >
+                    <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${brushSettings.projectFromCamera ? 'left-4.5' : 'left-0.5'}`} />
                   </button>
                 </div>
 

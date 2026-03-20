@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import * as THREE from 'three';
 import type { GPULayer } from '@/hooks/useWebGLPaint';
-import { Layers, Plus, Trash2, Eye, EyeOff, ArrowUp, ArrowDown, Folder, FolderPlus, ChevronRight, ChevronDown, CornerUpLeft, Merge } from 'lucide-react';
+import { Layers, Plus, Trash2, Eye, EyeOff, ArrowUp, ArrowDown, Folder, FolderPlus, ChevronRight, ChevronDown, CornerUpLeft, Merge, Image as ImageIcon } from 'lucide-react';
 import { Slider } from '@/components/ui/slider';
+import { toast } from 'sonner';
 
 interface LayerControls {
   layers: GPULayer[];
@@ -20,6 +21,7 @@ interface LayerControls {
   setEditingMask?: (id: string, editing: boolean) => void;
   mergeLayer?: (id: string) => void;
   mergeFolder?: (id: string) => void;
+  importImageToLayer?: (file: File) => Promise<void>;
 }
 
 interface LayersPanelProps {
@@ -57,7 +59,7 @@ export const LayersPanel: React.FC<LayersPanelProps> = ({ layerControls, pbrMode
   const {
     layers, activeLayerId, addLayer, addFolder, removeLayer, updateLayer, setLayerActive, moveLayer, reorderLayer,
     createLayerMask, deleteLayerMask, toggleLayerMask, setEditingMask,
-    mergeLayer, mergeFolder
+    mergeLayer, mergeFolder, importImageToLayer
   } = layerControls;
   const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
   const [draggedId, setDraggedId] = useState<string | null>(null);
@@ -66,6 +68,7 @@ export const LayersPanel: React.FC<LayersPanelProps> = ({ layerControls, pbrMode
   const [collapsedItems, setCollapsedItems] = useState<Set<string>>(new Set());
   const [editName, setEditName] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (editingLayerId && inputRef.current) {
@@ -160,6 +163,31 @@ export const LayersPanel: React.FC<LayersPanelProps> = ({ layerControls, pbrMode
           >
             <Plus className="w-4 h-4" />
           </button>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-white"
+            title="Import Texture to Layer"
+          >
+            <ImageIcon className="w-4 h-4" />
+          </button>
+          <input
+            type="file"
+            ref={fileInputRef}
+            className="hidden"
+            accept="image/*"
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (file && importImageToLayer) {
+                try {
+                  await importImageToLayer(file);
+                  toast.success(`${file.name} importado para nova camada!`);
+                } catch (err) {
+                  toast.error("Erro ao importar imagem.");
+                }
+              }
+              e.target.value = ''; // Reset for next selection
+            }}
+          />
         </div>
       </div>
 

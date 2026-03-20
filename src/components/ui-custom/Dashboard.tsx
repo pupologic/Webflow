@@ -64,7 +64,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onLoadProjec
             <div className="h-32 md:h-48 flex items-center overflow-hidden">
               <img src={logoImg} alt="Webflow" className="h-full object-contain" />
             </div>
-            <span className="text-[10px] md:text-xs text-zinc-500 font-medium tracking-widest mt-[-10px]">V 1.7.3</span>
+            <span className="text-[10px] md:text-xs text-zinc-500 font-medium tracking-widest mt-[-10px]">V 1.8.0</span>
           </div>
         </header>
 
